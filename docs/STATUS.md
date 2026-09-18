@@ -15,6 +15,11 @@ What is **verified working**:
   (`tests/test_end_to_end.py`).
 * `zeta edit` leaves every documented artifact and writes nothing into the repo
   (`tests/test_cli.py`).
+* `zeta ingest` accepts an **audio-only** file (tested with `.m4a`): it probes
+  0x0 with no video stream and extracts the 16 kHz mono WAV as usual. Since
+  every downstream stage reads only that WAV (`ingest.py:44`), the whole of
+  Stage 1 can be exercised from audio, at roughly 150 KB/minute as Opus - which
+  matters when the only way in is a 30 MB chat upload.
 * `GEMINI_API_KEY` valid; `gemini-3.5-flash-lite` and `gemini-3.1-flash-lite`
   answer real calls, including a real Arabic WAV. A 13 s synthesised Arabic clip
   came back as 15 words of Arabic-script Darija through the `gemini_flash_lite`
@@ -38,9 +43,28 @@ What is **verified working**:
 This is the honest list. Everything here is written and unit-tested; none of it
 has met Ali's footage.
 
-1. **WhisperX alignment on Darija.** The timing authority for every artifact.
-   Expect the alias map (digits, Latin names, French words handed to an Arabic
-   acoustic model) to need work. `helpers/align_whisperx.py`.
+1. **WhisperX alignment on Darija - and it cannot run in this container at
+   all.** `huggingface.co` is blocked by the environment's egress policy
+   (ProxyError, not a 404), so `wx.load_align_model` cannot fetch
+   `jonatasgrosman/wav2vec2-large-xlsr-53-arabic` and raises the misleading
+   "could not be found in huggingface ... or torchaudio". `download.pytorch.org`
+   is blocked too, so the `english_model` torchaudio bundle is no fallback, and
+   `hf-mirror.com` is blocked as well. PyPI and GitHub are reachable; this is
+   specific to the model hosts.
+
+   Verified end to end on 2026-09-18 with a synthesised Arabic clip: `zeta
+   ingest` and Gemini transcription both succeeded and wrote
+   `transcripts/ar_clip.words.json` with `"aligner": null`, then
+   `cli.py:140 -> align_whisperx.align` died. So Stage 1's text half works here
+   and its time half cannot, which means **no footage can complete `zeta
+   transcribe` in this environment** until either `huggingface.co` is
+   allow-listed for the environment
+   (https://code.claude.com/docs/en/claude-code-on-the-web) or the model cache
+   is populated some other way. Nothing about the alias map, the QA gate or the
+   Darija quality can be learned until then. `helpers/align_whisperx.py`.
+
+   Separately, and still true once it does run: expect the alias map (digits,
+   Latin names, French words handed to an Arabic acoustic model) to need work.
 2. **The QA gate on real speech** - coverage >= 95%, zero overlaps, no word over
    2 s. It fails the run by design, so it is the first thing that will stop a
    real take.
