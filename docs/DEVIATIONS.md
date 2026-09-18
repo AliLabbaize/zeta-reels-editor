@@ -76,5 +76,9 @@ Scene detection overrides them wherever both exist.
 * **Alignment quality and the face-presence check in learn mode are untested on
   real footage.** The fixtures are synthetic: tone bursts and a flat insert card,
   with no face and no speech.
+* **`zeta fetch` has not been run against a live platform.** Instagram and
+  TikTok are blocked by this build environment's network policy (403 at the
+  proxy), so only the argv construction and the pairs.csv rows are tested.
+  Expect to need `--cookies-from-browser` for Instagram.
 * **`shot-scraper`'s multi-YAML keys and the cookie-dismissal JS** have not been
   run against a live browser. One smoke run once `[shots]` is installed.

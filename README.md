@@ -49,11 +49,16 @@ WhisperX alignment runs on CPU; a GPU only makes it faster.
 ## Use
 
 ```bash
+zeta fetch https://www.instagram.com/reel/... -v learn/published --name ep14 --pairs pairs.csv
 zeta learn --pairs pairs.csv --out style_profile.json
 zeta edit raw01.mp4 --profile style_profile.json --links links.txt --aspect 9:16
 zeta edit raw01.mp4 --auto                  # unattended; the report is the review
 zeta review edit/edl.json                   # open the decision report
 ```
+
+`fetch` downloads a published video for learn mode. A published-only row teaches
+insert density, layout and triggers, but not the cut ratio or the filler policy:
+a finished video does not record what was removed, so those need the raw take.
 
 Stages also run on their own: `zeta ingest`, `zeta transcribe`, `zeta plan`,
 `zeta research`, `zeta render`, `zeta benchmark`.

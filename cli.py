@@ -2,6 +2,7 @@
 
     zeta ingest      raw/*.mp4 -v <videos_dir>
     zeta transcribe  -v <videos_dir> [--backend gemini_flash_lite] [--force]
+    zeta fetch       <ig|tiktok|youtube url> -v <dir> --name ep14 --pairs pairs.csv
     zeta learn       --pairs pairs.csv --out style_profile.json
     zeta plan        -v <videos_dir> --profile style_profile.json [--auto]
     zeta research    -v <videos_dir> [--links links.txt]
@@ -29,8 +30,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from helpers import config as configs
 from helpers import (
     align_whisperx, build_overlay, captions, derive_cuts, edl as edl_mod,
-    ingest as ingest_mod, pack_transcripts, plan_edit, qa_words, report as report_mod,
-    research as research_mod, screenshot, self_eval, transcribe_gemini, verify_screenshot,
+    fetch as fetch_mod, ingest as ingest_mod, pack_transcripts, plan_edit, qa_words,
+    report as report_mod, research as research_mod, screenshot, self_eval,
+    transcribe_gemini, verify_screenshot,
 )
 from helpers.gemini_client import LLM, LLMUnavailable
 from helpers.paths import EditPaths, REPO_ROOT
@@ -304,6 +306,16 @@ def cmd_transcribe(args) -> int:
     return 0
 
 
+def cmd_fetch(args) -> int:
+    return fetch_mod.main(
+        list(args.urls) + ["-v", str(args.videos_dir)]
+        + (["--name", args.name] if args.name else [])
+        + (["--pairs", args.pairs] if args.pairs else [])
+        + (["--raw", args.raw] if args.raw else [])
+        + (["--cookies-from-browser", args.cookies_from_browser]
+           if args.cookies_from_browser else []))
+
+
 def cmd_learn(args) -> int:
     from helpers import learn_style       # lazy: pulls scenedetect and cv2
     profile = learn_style.learn(args.pairs, out=args.out,
@@ -439,6 +451,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-align", action="store_true",
                    help="skip forced alignment (debugging only: timings stay approximate)")
     p.set_defaults(func=cmd_transcribe)
+
+    p = sub.add_parser("fetch", help="download a published video by URL, for learn mode")
+    p.add_argument("urls", nargs="+")
+    add_common(p)
+    p.add_argument("--name", help="basename for a single download, e.g. ep14")
+    p.add_argument("--pairs", help="pairs.csv to append the row to")
+    p.add_argument("--raw", help="the matching raw take, if you have it")
+    p.add_argument("--cookies-from-browser", help="chrome | firefox | safari")
+    p.set_defaults(func=cmd_fetch)
 
     p = sub.add_parser("learn", help="learn the editing style from raw/published pairs")
     p.add_argument("--pairs", required=True, help="CSV of raw,published paths")
