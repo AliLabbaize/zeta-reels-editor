@@ -1,3 +1,10 @@
+# Declared explicitly: without it pip falls back to the legacy setuptools
+# backend, which still works but is deprecated, so `pip install -e .` would one
+# day start failing for a reason that has nothing to do with this project.
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "zeta-reels-editor"
 version = "0.1.0"

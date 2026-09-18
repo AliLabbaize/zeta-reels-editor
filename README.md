@@ -39,6 +39,13 @@ shot-scraper install                        # Playwright browser, for screenshot
 cp .env.example .env                        # then paste GEMINI_API_KEY
 ```
 
+`uv` is only a faster pip; nothing here depends on it. Without it:
+
+```bash
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install -e '.[llm,align,shots]'
+```
+
 The key is read from the environment first and from `.env` at the repo root
 second, so an exported or cloud-injected `GEMINI_API_KEY` always wins over the
 file. `.env` is gitignored; never put a key in `<videos_dir>`, those get shared.
@@ -58,6 +65,7 @@ WhisperX alignment runs on CPU; a GPU only makes it faster.
 ```bash
 brew install ffmpeg python@3.11
 brew install --cask font-noto-sans-arabic    # the caption font
+brew install uv                              # optional; python3.11 -m venv works
 ```
 
 Homebrew's ffmpeg carries libass, fribidi and harfbuzz, so the stock formula is
