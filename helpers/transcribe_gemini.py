@@ -696,19 +696,26 @@ def excerpt_window(start: float, end: float, *, duration: float, margin: float,
 
 
 def _replace_words(doc: WordsDoc, i: int, j: int, new: Sequence[Word]) -> None:
-    """Swap word span `[i, j)` and keep the segment index table consistent."""
+    """Swap word span `[i, j)` and keep the segment index table tiling.
+
+    A segment boundary that fell INSIDE the replaced span has no meaningful
+    position any more -- the words it separated are gone. It is collapsed to the
+    end of the replacement so the spans still tile the word list, which is all
+    `approx_span_time` needs from them.
+    """
     delta = len(new) - (j - i)
     doc.words[i:j] = list(new)
     spans = doc.meta.get("segment_word_spans")
     if not spans:
         return
+
+    def moved(index: int) -> int:
+        if index <= i:
+            return index
+        return index + delta if index >= j else i + len(new)
+
     for span in spans:
-        if span[0] >= j:
-            span[0] += delta
-        if span[1] >= j:
-            span[1] += delta
-        elif span[1] > i:
-            span[1] = max(span[0], span[1] + delta)
+        span[0], span[1] = moved(span[0]), max(moved(span[0]), moved(span[1]))
 
 
 def recheck_uncertain(

@@ -512,7 +512,7 @@ def write_slot_meta(slot: Slot, paths: EditPaths, extra: dict | None = None) -> 
 
 def shots_entries(slots: Sequence[Slot], *, width: int, retina: bool,
                   timeout_ms: int, javascript: str | None = None,
-                  wait_ms: int = 0) -> list[dict]:
+                  wait_for: str | None = None, wait_ms: int = 0) -> list[dict]:
     """shot-scraper `multi` batch entries, one per shippable slot.
 
     Shape per https://shot-scraper.datasette.io `shot-scraper multi shots.yml`:
@@ -532,6 +532,8 @@ def shots_entries(slots: Sequence[Slot], *, width: int, retina: bool,
         }
         if slot.selectors:
             entry["selector"] = slot.selectors[0]
+        if wait_for:
+            entry["wait_for"] = wait_for
         if wait_ms:
             entry["wait"] = int(wait_ms)
         if javascript:
@@ -543,7 +545,8 @@ def shots_entries(slots: Sequence[Slot], *, width: int, retina: bool,
 def write_shots_yml(slots: Sequence[Slot], paths: EditPaths, *, aspect: str | None = None,
                     sources_cfg: dict | None = None, layout_cfg: dict | None = None) -> Path:
     """Emit `edit/shots.yml` in shot-scraper multi format."""
-    from helpers.screenshot import capture_settings, cookie_banner_js  # lazy: avoids a cycle
+    from helpers.screenshot import (NETWORK_IDLE_JS, capture_settings,  # lazy: avoids a cycle
+                                    cookie_banner_js)
 
     scfg = sources_cfg if sources_cfg is not None else cfgmod.load("sources")
     settings = capture_settings(aspect=aspect, sources_cfg=scfg, layout_cfg=layout_cfg)
@@ -552,6 +555,7 @@ def write_shots_yml(slots: Sequence[Slot], paths: EditPaths, *, aspect: str | No
         width=settings["width"], retina=settings["retina"],
         timeout_ms=settings["timeout_ms"],
         javascript=cookie_banner_js() if settings["dismiss_cookie_banners"] else None,
+        wait_for=NETWORK_IDLE_JS if settings["wait_for_network_idle"] else None,
     )
     p = paths.edit / "shots.yml"
     p.parent.mkdir(parents=True, exist_ok=True)

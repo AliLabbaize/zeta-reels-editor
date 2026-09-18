@@ -29,7 +29,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Sequence
 
 if __package__ in (None, ""):  # `python helpers/screenshot.py`
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -52,6 +52,11 @@ COOKIE_BANNER_JS = """
   return true;
 })()
 """
+
+
+# shot-scraper waits for `load`; this waits for the page to settle, which is
+# what "network idle" buys us -- late-loading headline images and web fonts.
+NETWORK_IDLE_JS = "document.readyState === 'complete'"
 
 
 class CaptureError(RuntimeError):
@@ -157,7 +162,7 @@ def shot_scraper_cmd(url: str, output: str | Path, *, selector: str | None,
     if selector:
         cmd += ["--selector", selector]
     if wait_for_network_idle:
-        cmd += ["--wait-for", "document.readyState === 'complete'"]
+        cmd += ["--wait-for", NETWORK_IDLE_JS]
     if javascript:
         cmd += ["--javascript", javascript]
     cmd += ["--timeout", str(int(timeout_ms))]

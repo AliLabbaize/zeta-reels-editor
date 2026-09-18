@@ -272,6 +272,9 @@ def extract_wav(src: str | Path, out_wav: str | Path, *, force: bool = False) ->
         "-vn", "-map", "0:a:0",
         "-ac", str(WAV_CHANNELS), "-ar", str(WAV_SAMPLE_RATE),
         "-c:a", "pcm_s16le",
+        # The temp name ends in .part, so ffmpeg cannot infer the muxer from the
+        # extension and would refuse the write. State it.
+        "-f", "wav",
         str(tmp),
     ]
     try:

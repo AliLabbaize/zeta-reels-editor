@@ -31,7 +31,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Mapping, Sequence
 
 try:  # package import
     from . import config as configs
@@ -151,23 +151,24 @@ class CaptionStyle:
 
 def resolve_style(aspect: str | None = None, *, captions_cfg: dict | None = None,
                   layout_cfg: dict | None = None) -> CaptionStyle:
+    """Resolve `configs/captions.yaml` + `configs/layout.yaml` for one aspect.
+
+    margin_v is not taste: layout.yaml measures the Instagram UI band at 420 px
+    of a 1080x1920 Reel (username, caption, audio ticker, tab bar) plus a right
+    action rail, and captions.yaml puts the caption baseline at 480 px, above
+    that band. Lower it and the captions render underneath the app chrome.
+    """
     caps = captions_cfg if captions_cfg is not None else configs.load("captions")
-    key = aspect or (layout_cfg or {}).get("default_aspect") or "9:16"
-    if layout_cfg is None and aspect is None:
-        key, _ = configs.aspect_config(None)
+    layout = layout_cfg if layout_cfg is not None else configs.load("layout")
+    key = aspect or layout.get("default_aspect") or "9:16"
     block = (caps.get("aspects") or {}).get(key)
     if block is None:
         raise KeyError(f"unknown aspect {key!r}; known: {sorted(caps.get('aspects') or {})}")
 
-    # PlayRes comes from layout.yaml: it is the frame the renderer actually
-    # produces, and the caption grid must be that same frame or the margins
-    # stop meaning pixels.
-    if layout_cfg is not None:
-        res = ((layout_cfg.get("aspects") or {}).get(key) or {}).get("resolution")
-    else:
-        _, layout_block = configs.aspect_config(key)
-        res = layout_block.get("resolution")
-    res = res or block.get("resolution") or [1080, 1920]
+    # PlayRes is the frame the renderer actually produces; the caption grid has
+    # to be that same frame or the margins stop meaning pixels.
+    res = ((layout.get("aspects") or {}).get(key) or {}).get("resolution") \
+        or block.get("resolution") or [1080, 1920]
 
     wpl = block.get("words_per_line") or [2, 4]
     font = caps.get("font") or {}
@@ -185,11 +186,6 @@ def resolve_style(aspect: str | None = None, *, captions_cfg: dict | None = None
         style=caps.get("style") or {},
     )
 
-    # NOTE on margin_v: it is not taste. layout.yaml measures the Instagram UI
-    # band at 420 px of a 1080x1920 Reel (username, caption, audio ticker, tab
-    # bar) plus a right action rail; margin_v 480 puts the caption baseline
-    # above that band on every phone. Lowering it hides captions under the UI.
-
 
 # -------- source time -> output time ----------------------------------------
 
@@ -204,6 +200,10 @@ class _Mapped:
     end: float | None
     range_index: int
     punct_break: str  # "" | "weak" | "strong"
+
+    @property
+    def timed(self) -> bool:
+        return self.start is not None and self.end is not None
 
 
 def _range_index(edl: EDL, source: str, t: float) -> int | None:
@@ -245,7 +245,7 @@ def map_words(doc: WordsDoc, edl: EDL, source: str | None = None) -> list[_Mappe
         if not w.timed:
             # Untimed words ride along with the word before them; they cannot
             # be placed on their own and they disable karaoke for their cue.
-            if out and out[-1].range_index >= 0:
+            if out:
                 out.append(_Mapped(text, lang, None, None, out[-1].range_index,
                                    _trailing_punct(text)))
             continue
@@ -286,22 +286,22 @@ def _chunk(mapped: Sequence[_Mapped], style: CaptionStyle) -> list[list[_Mapped]
 
     for m in mapped:
         if cur:
-            reason_break = False
+            must_break = False
             if m.range_index != cur[-1].range_index:
-                reason_break = True  # a cue never spans a cut
+                must_break = True  # a cue never spans a cut
             elif len(cur) >= hi:
-                reason_break = True
+                must_break = True
             elif len(" ".join(w.text for w in cur)) + 1 + len(m.text) > style.max_chars_per_line:
-                reason_break = True
+                must_break = True
             elif m.timed and prev_end is not None and (m.start - prev_end) >= gap_s:
-                reason_break = True
+                must_break = True
             elif m.timed and cur_start is not None and (m.end - cur_start) > max_dur:
-                reason_break = True
+                must_break = True
             elif on_punct and cur[-1].punct_break == "strong":
-                reason_break = True
+                must_break = True
             elif on_punct and cur[-1].punct_break == "weak" and len(cur) >= lo:
-                reason_break = True
-            if reason_break:
+                must_break = True
+            if must_break:
                 flush()
         cur.append(m)
         if m.timed:
@@ -363,7 +363,8 @@ def _to_cues(groups: list[list[_Mapped]], edl: EDL, style: CaptionStyle) -> list
         limit = seg_end
         if i + 1 < len(cues):
             limit = min(limit, cues[i + 1].start)
-        cue.end = min(max(cue.end, cue.start + min_dur), limit)
+        # Only ever extend: clamping must not cut a cue short.
+        cue.end = max(cue.end, min(cue.start + min_dur, limit))
     return cues
 
 
@@ -477,7 +478,14 @@ def _inline_prefix(style: CaptionStyle, karaoke: bool) -> str:
     align = int(st.get("alignment", 2))
     x = w // 2
     y = h - style.margin_v
-    tags = [f"\\an{align}", f"\\pos({x},{y})", f"\\fs{scaled_font_size(style)}"]
+    # The font name is the load-bearing one. force_style pins FontName=Helvetica,
+    # which has no Arabic coverage at all: without an inline \fn every Darija
+    # caption is at the mercy of whatever fontconfig decides to substitute, which
+    # differs between Ali's Mac and a Linux batch runner. \bord likewise, because
+    # force_style's Outline=2 is thinner than the config asks for at 1920 tall.
+    tags = [f"\\an{align}", f"\\pos({x},{y})", f"\\fs{scaled_font_size(style)}",
+            f"\\fn{style.font}", f"\\bord{st.get('outline', 3)}",
+            f"\\b{1 if st.get('bold', True) else 0}"]
     if karaoke:
         tags.append(f"\\1c{_inline_colour(st.get('highlight_colour', '&H0000D7FF'))}")
         tags.append(f"\\2c{_inline_colour(st.get('primary_colour', '&H00FFFFFF'))}")
@@ -570,11 +578,26 @@ def write_captions(words: WordsDoc | Mapping[str, WordsDoc], edl: EDL,
     bidi = check_bidi(cues)
     return {
         "ass": ass_path,
+        "subtitles_field": subtitles_field(edit_paths, ass_path),
         "srt": srt_path if want_srt else None,
         "cues": cues,
         "aspect": st.aspect,
         "bidi": [f.to_dict() for f in bidi],
     }
+
+
+def subtitles_field(edit_paths: EditPaths, ass_path: Path) -> str:
+    """The value to put in `EDL.subtitles` for this .ass.
+
+    `render.py` resolves a relative subtitles path against the directory the
+    edl.json sits in (`<videos>/edit/`), not against `<videos>/`, so the field
+    has to be spelled relative to the edit dir or the burn is silently skipped
+    with a warning.
+    """
+    try:
+        return str(ass_path.resolve().relative_to(edit_paths.edit.resolve()))
+    except ValueError:
+        return str(ass_path.resolve())
 
 
 def cues_to_json(cues: Sequence[Cue]) -> list[dict]:
