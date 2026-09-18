@@ -215,29 +215,16 @@ class EditPlan:
 
 
 def packed_view(doc: WordsDoc, *, break_gap_s: float = 0.5) -> str:
-    """Minimal phrase view: `[start-end] (gap ms) text`.
+    """The planner's reading view, from the one packer.
 
-    `pack_transcripts.py` owns the real packed view; this stand-in exists so the
-    planner can run on a bare `words.json` before the pack stage has run.
+    The prompt tells the model it is getting gap durations and language tags, so
+    it has to be the real packed format from `pack_transcripts`, not a lookalike.
+    A second format here would drift from the one `zeta transcribe` writes and
+    the model would be reading a view nobody else has seen.
     """
-    lines: list[str] = []
-    phrase: list[str] = []
-    start = prev_end = None
-    gap_ms = 0.0
-    for w in doc.timed_words():
-        gap = 0.0 if prev_end is None else w.start - prev_end
-        if phrase and gap >= break_gap_s:
-            lines.append(f"[{start:.2f}-{prev_end:.2f}] (gap {gap_ms:.0f} ms) "
-                         + " ".join(phrase))
-            phrase, start, gap_ms = [], w.start, gap * 1000.0
-        if not phrase:
-            start, gap_ms = w.start, gap * 1000.0
-        phrase.append(w.display or w.word)
-        prev_end = w.end
-    if phrase:
-        lines.append(f"[{start:.2f}-{prev_end:.2f}] (gap {gap_ms:.0f} ms) " + " ".join(phrase))
-    return "\n".join(lines)
+    from . import pack_transcripts
 
+    return pack_transcripts.pack_doc(doc, silence_s=break_gap_s)
 
 def build_prompt(packed_text: str, profile: dict, few_shot: str = "",
                  feedback: str | None = None) -> str:

@@ -234,8 +234,14 @@ def test_prompt_carries_the_profile_and_the_examples():
     assert "packed lines" in prompt
 
 
-def test_packed_view_reports_gaps_in_ms():
+def test_packed_view_is_the_one_packed_format():
+    """The prompt promises gap durations and language tags, so the planner has
+    to read the same view `zeta transcribe` writes, not a lookalike."""
+    from helpers import pack_transcripts
+
     doc = mkdoc(["one", "two"], gap_s=0.8)
     view = plan_edit.packed_view(doc)
 
-    assert view.count("\n") == 1 and "gap 800 ms" in view
+    assert view == pack_transcripts.pack_doc(doc, silence_s=0.5)
+    assert "gap=800ms" in view
+    assert "[en]" in view, "the language tag has to survive into the planner's view"

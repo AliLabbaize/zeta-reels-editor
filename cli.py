@@ -115,13 +115,24 @@ def stage_transcribe(paths: EditPaths, *, backend: str | None = None,
     llm = _llm(cfg, paths)
     docs = []
     for source in _sources(paths):
+        # Hard rule 9 covers the transcript; alignment deserves the same
+        # treatment, because forced alignment of a ten minute take on CPU costs
+        # more than the transcription did. If the words.json on disk was built
+        # from this exact file, it is still true.
+        cached = paths.words_json(source.name)
+        if cached.exists() and not force:
+            doc = WordsDoc.load(cached)
+            if doc.source.get("sha256") == source.sha256:
+                _say(f"{source.name}: transcript is current, reusing it")
+                docs.append(doc)
+                continue
+
         _say(f"transcribing {source.name} ({backend or cfg['default_backend']})")
         doc = transcribe_gemini.transcribe_source(
             source, cfg, paths, llm, backend=backend, force=force,
             second_opinion=configs.get(cfg, "second_opinion.enabled", False))
 
-        wav = Path(source.wav_path) if getattr(source, "wav_path", None) else \
-            paths.audio / f"{source.name}.wav"
+        wav = Path(source.wav)
         if align and not cfg.get("use_backend_timings", False):
             _say(f"aligning {source.name} (timing authority stays acoustic)")
             doc = align_whisperx.align(doc, wav, cfg)
@@ -135,8 +146,8 @@ def stage_transcribe(paths: EditPaths, *, backend: str | None = None,
         doc.save(paths.words_json(source.name))
         docs.append(doc)
 
-    packed = pack_transcripts.pack(paths)
-    _say(f"packed -> {packed['path'] if isinstance(packed, dict) else paths.packed}")
+    pack_transcripts.pack(paths)
+    _say(f"packed -> {paths.packed}")
     return docs
 
 
@@ -395,10 +406,11 @@ def cmd_benchmark(args) -> int:
     from helpers import benchmark
     paths = _paths(args.videos_dir)
     samples = benchmark.load_manifest(args.manifest)
-    results = benchmark.run_benchmark(samples, benchmark.default_variants()
-                                      if hasattr(benchmark, "default_variants") else [],
-                                      configs.load("transcribe"), paths)
-    print(benchmark.render_table(results.get("results", results)))
+    variants = [v for v in benchmark.DEFAULT_VARIANTS
+                if not args.variants or v.id in set(args.variants.split(","))]
+    results = benchmark.run_benchmark(samples, variants, configs.load("transcribe"), paths)
+    rows = results.get("results", results) if isinstance(results, dict) else results
+    print(benchmark.render_table(rows, benchmark.pick_winner(rows)))
     return 0
 
 
@@ -474,6 +486,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("benchmark", help="score transcription variants (spec stage 1)")
     add_common(p)
     p.add_argument("--manifest", required=True, help="JSON of wav/reference pairs")
+    p.add_argument("--variants", help="comma-separated variant ids (default: a,b,c,d)")
     p.set_defaults(func=cmd_benchmark)
 
     return ap
