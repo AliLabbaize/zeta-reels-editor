@@ -66,7 +66,16 @@ aggregate statistics in `style_profile.json` — cut ratio, inserts per minute,
 median durations. They never become a cut, a caption or an overlay position.
 Scene detection overrides them wherever both exist.
 
-## 9. Not yet done, and why
+## 9. `gemini_transcribe` answers in a part the SDK does not fold into `.text`
+
+The transcription models return an `audio_transcription` part, not a text part,
+so `resp.text` is empty for a perfectly good transcript. The client reads the
+parts directly before giving up. An unusable answer is also no longer retried:
+the same request returns the same shape four times, each after a longer backoff,
+and the real reason arrives minutes late. Retries still apply to transport
+failures, and the fallback model still gets its turn.
+
+## 10. Not yet done, and why
 
 * **The Stage 1 benchmark has not been run.** It needs `GEMINI_API_KEY` and
   three past videos with human-corrected transcripts.

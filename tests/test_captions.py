@@ -266,3 +266,20 @@ def test_subtitles_field_is_relative_to_the_edit_dir(tmp_path, edl, doc):
     out = captions.write_captions(doc, edl, paths, aspect="9:16")
     assert out["subtitles_field"] == "captions/final.ass"
     assert (paths.edit / out["subtitles_field"]).exists()
+
+
+def test_missing_font_is_detected_rather_than_silently_substituted():
+    """libass substitutes instead of failing, so nothing else would notice."""
+    import subprocess
+
+    from helpers import captions as cap
+
+    installed = subprocess.CompletedProcess(
+        [], 0, "Noto Sans Arabic\nDejaVu Sans\n", "")
+    assert cap.font_available("Noto Sans Arabic", runner=lambda *a, **k: installed) is True
+    assert cap.font_available("IBM Plex Sans Arabic", runner=lambda *a, **k: installed) is False
+
+    # fontconfig absent or broken is "unknown", not "missing": a wrong warning
+    # on every render would train people to ignore it.
+    failed = subprocess.CompletedProcess([], 1, "", "no fontconfig")
+    assert cap.font_available("Noto Sans Arabic", runner=lambda *a, **k: failed) is None

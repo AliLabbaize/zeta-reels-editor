@@ -36,6 +36,15 @@ class LLMError(RuntimeError):
     pass
 
 
+class LLMResponseError(LLMError):
+    """The model answered and the answer was not usable.
+
+    Separate from a transport failure because retrying it is pure cost: the same
+    request returns the same unusable shape four times, each after a longer
+    backoff, and the real reason arrives minutes late.
+    """
+
+
 class LLMUnavailable(LLMError):
     """No API key, or mock mode is on and nothing answered the request."""
 
@@ -178,6 +187,12 @@ class LLM:
             for attempt in range(self.max_retries):
                 try:
                     return self._call_once(model_name, req, images, files)
+                except LLMResponseError as exc:
+                    # The model replied; a backoff changes nothing. Move on to
+                    # the fallback model, which is a different model and may
+                    # answer in a shape we can read.
+                    last = exc
+                    break
                 except Exception as exc:  # transient: rate limit, 5xx, timeout
                     last = exc
                     if attempt == self.max_retries - 1:
@@ -185,6 +200,30 @@ class LLM:
                     delay = (2 ** attempt) + random.uniform(0, 0.5)
                     time.sleep(delay)
         raise LLMError(f"all attempts failed for {models}: {last}") from last
+
+    @staticmethod
+    def _response_text(resp: Any) -> str | None:
+        """Pull the answer out, whatever part shape the model used.
+
+        `resp.text` is a convenience over text parts only. The transcription
+        models answer with an `audio_transcription` part instead, so a reader
+        that only knows `.text` sees a valid response as an empty one.
+        """
+        text = getattr(resp, "text", None)
+        if text:
+            return text
+        for candidate in (getattr(resp, "candidates", None) or []):
+            content = getattr(candidate, "content", None)
+            for part in (getattr(content, "parts", None) or []):
+                transcription = getattr(part, "audio_transcription", None)
+                if transcription is not None:
+                    value = getattr(transcription, "text", None) or (
+                        transcription.get("text") if isinstance(transcription, dict) else None)
+                    if value:
+                        return value
+                if getattr(part, "text", None):
+                    return part.text
+        return None
 
     def _call_once(self, model_name: str, req: dict, images: Sequence, files: Sequence) -> str:
         client = self._genai()
@@ -203,9 +242,14 @@ class LLM:
             cfg["tools"] = [{t: {}} for t in req["tools"]]
 
         resp = client.models.generate_content(model=model_name, contents=parts, config=cfg)
-        text = getattr(resp, "text", None)
+        text = self._response_text(resp)
         if not text:
-            raise LLMError(f"empty response from {model_name}")
+            finish = None
+            for candidate in (getattr(resp, "candidates", None) or []):
+                finish = getattr(candidate, "finish_reason", None) or finish
+            raise LLMResponseError(
+                f"no usable content in the response from {model_name}"
+                + (f" (finish_reason={finish})" if finish else ""))
         return text
 
     # -- conveniences -------------------------------------------------------

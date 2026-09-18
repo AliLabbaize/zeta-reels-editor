@@ -559,6 +559,30 @@ def check_bidi(cues: Sequence[Cue]) -> list[BidiFinding]:
 # -------- write --------------------------------------------------------------
 
 
+def font_available(name: str, *, runner=None) -> bool | None:
+    """Is `name` installed? None when fontconfig cannot be consulted.
+
+    libass does not fail on a missing font, it substitutes one. The captions
+    still burn, in the wrong face, with the wrong metrics and possibly no Arabic
+    coverage at all - which reads as a styling choice rather than a missing
+    package, and is the kind of thing that only gets noticed after publishing.
+    """
+    import shutil
+    import subprocess
+
+    if runner is None:
+        if shutil.which("fc-list") is None:
+            return None
+        runner = subprocess.run
+    try:
+        out = runner(["fc-list", ":lang=ar", "family"], capture_output=True, text=True)
+    except OSError:
+        return None
+    if getattr(out, "returncode", 1) != 0:
+        return None
+    return name.casefold() in (out.stdout or "").casefold()
+
+
 def write_captions(words: WordsDoc | Mapping[str, WordsDoc], edl: EDL,
                    edit_paths: EditPaths, *, aspect: str | None = None,
                    style: CaptionStyle | None = None,
@@ -576,6 +600,12 @@ def write_captions(words: WordsDoc | Mapping[str, WordsDoc], edl: EDL,
         srt_path.write_text(render_srt(cues, st), encoding="utf-8")
 
     bidi = check_bidi(cues)
+    have_font = font_available(st.font)
+    if have_font is False:
+        print(f"zeta: warning: font {st.font!r} is not installed. libass will "
+              f"substitute silently, so the burned captions will not look like "
+              f"the ones configured. Install it (fonts-noto-core on Debian and "
+              f"Ubuntu) before trusting the render.")
     return {
         "ass": ass_path,
         "subtitles_field": subtitles_field(edit_paths, ass_path),

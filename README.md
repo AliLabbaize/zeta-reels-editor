@@ -43,7 +43,14 @@ The key is read from the environment first and from `.env` at the repo root
 second, so an exported or cloud-injected `GEMINI_API_KEY` always wins over the
 file. `.env` is gitignored; never put a key in `<videos_dir>`, those get shared.
 
-Needs `ffmpeg` and `ffprobe` with libass (caption burn-in). Python 3.11.
+Needs `ffmpeg` and `ffprobe` built with libass, fribidi and harfbuzz: libass
+burns the captions, fribidi reorders RTL, harfbuzz shapes the Arabic. You also
+need the caption font itself (`fonts-noto-core` on Debian/Ubuntu) - libass
+substitutes silently when it is missing, so the captions burn in the wrong face
+rather than failing. Python 3.11.
+
+In a Claude Code session, `scripts/session_start.sh` installs all of that for
+you on startup.
 WhisperX alignment runs on CPU; a GPU only makes it faster.
 
 ## Use
