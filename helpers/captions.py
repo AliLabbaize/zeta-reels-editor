@@ -559,8 +559,49 @@ def check_bidi(cues: Sequence[Cue]) -> list[BidiFinding]:
 # -------- write --------------------------------------------------------------
 
 
+# macOS ships no fontconfig; libass resolves through CoreText instead. These are
+# the directories CoreText reads, so they are where a font has to have landed.
+MAC_FONT_DIRS = (
+    "~/Library/Fonts",
+    "/Library/Fonts",
+    "/System/Library/Fonts",
+    "/System/Library/Fonts/Supplemental",
+)
+_FONT_SUFFIXES = (".ttf", ".otf", ".ttc", ".otc", ".dfont")
+
+
+def _squash(name: str) -> str:
+    """Fold a family name onto a filename: "Noto Sans Arabic" -> "notosansarabic"."""
+    return "".join(ch for ch in name.casefold() if ch.isalnum())
+
+
+def font_in_dirs(name: str, dirs: Sequence[str] = MAC_FONT_DIRS) -> bool | None:
+    """Is `name` installed in one of `dirs`? None when none of them exist.
+
+    Filename matching, because reading family names out of the font tables would
+    mean parsing OpenType here. A file is a match when the squashed family name
+    is a substring of the squashed stem, so NotoSansArabic-Regular.ttf and the
+    variable NotoSansArabic[wdth,wght].ttf both answer for "Noto Sans Arabic".
+    """
+    wanted = _squash(name)
+    looked = False
+    for d in dirs:
+        p = Path(d).expanduser()
+        if not p.is_dir():
+            continue
+        looked = True
+        try:
+            entries = list(p.iterdir())
+        except OSError:
+            continue
+        for f in entries:
+            if f.suffix.casefold() in _FONT_SUFFIXES and wanted in _squash(f.stem):
+                return True
+    return False if looked else None
+
+
 def font_available(name: str, *, runner=None) -> bool | None:
-    """Is `name` installed? None when fontconfig cannot be consulted.
+    """Is `name` installed? None when neither fontconfig nor CoreText can answer.
 
     libass does not fail on a missing font, it substitutes one. The captions
     still burn, in the wrong face, with the wrong metrics and possibly no Arabic
@@ -572,7 +613,10 @@ def font_available(name: str, *, runner=None) -> bool | None:
 
     if runner is None:
         if shutil.which("fc-list") is None:
-            return None
+            # Without this the guard is silently off on macOS, which is where
+            # the renders tend to happen. Everywhere else, no fc-list still
+            # means "unknown" rather than a guess.
+            return font_in_dirs(name, MAC_FONT_DIRS) if sys.platform == "darwin" else None
         runner = subprocess.run
     try:
         out = runner(["fc-list", ":lang=ar", "family"], capture_output=True, text=True)
@@ -605,7 +649,8 @@ def write_captions(words: WordsDoc | Mapping[str, WordsDoc], edl: EDL,
         print(f"zeta: warning: font {st.font!r} is not installed. libass will "
               f"substitute silently, so the burned captions will not look like "
               f"the ones configured. Install it (fonts-noto-core on Debian and "
-              f"Ubuntu) before trusting the render.")
+              f"Ubuntu, `brew install --cask font-noto-sans-arabic` on macOS) "
+              f"before trusting the render.")
     return {
         "ass": ass_path,
         "subtitles_field": subtitles_field(edit_paths, ass_path),

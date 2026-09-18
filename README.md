@@ -53,6 +53,31 @@ In a Claude Code session, `scripts/session_start.sh` installs all of that for
 you on startup.
 WhisperX alignment runs on CPU; a GPU only makes it faster.
 
+### On macOS
+
+```bash
+brew install ffmpeg python@3.11
+brew install --cask font-noto-sans-arabic    # the caption font
+```
+
+Homebrew's ffmpeg carries libass, fribidi and harfbuzz, so the stock formula is
+enough. Two platform differences worth knowing before the first render:
+
+* **Alignment runs on CPU, including on Apple Silicon.** `alignment.device:
+  auto` resolves to `cuda` or `cpu` and never to `mps`, because wav2vec2 under
+  MPS is not reliable enough to be the timing authority. Expect a long take to
+  align in minutes rather than seconds; correctness is unaffected. Forcing
+  `device: mps` in `configs/transcribe.yaml` is not a supported configuration.
+* **There is no fontconfig.** libass resolves fonts through CoreText, so the
+  installed-font check reads `~/Library/Fonts` and `/Library/Fonts` instead of
+  `fc-list`. Install the font into one of those - `brew install --cask` does -
+  or the check cannot see it.
+
+A cloud session cannot do alignment at all if `huggingface.co` is outside its
+egress policy: whisperx downloads the wav2vec2 weights on first use, and the
+error it raises ("could not be found in huggingface ... or torchaudio") names
+the wrong cause. A Mac with normal network access has no such problem.
+
 ## Use
 
 ```bash

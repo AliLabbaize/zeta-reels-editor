@@ -283,3 +283,47 @@ def test_missing_font_is_detected_rather_than_silently_substituted():
     # on every render would train people to ignore it.
     failed = subprocess.CompletedProcess([], 1, "", "no fontconfig")
     assert cap.font_available("Noto Sans Arabic", runner=lambda *a, **k: failed) is None
+
+
+def test_font_detection_falls_back_to_coretext_dirs_on_macos(tmp_path, monkeypatch):
+    """macOS has no fontconfig, and that is where the renders happen.
+
+    Without the CoreText fallback `font_available` returns None there, so the
+    guard against a silently substituted font is off on exactly the platform it
+    most needs to be on.
+    """
+    from helpers import captions as cap
+
+    fonts = tmp_path / "Library" / "Fonts"
+    fonts.mkdir(parents=True)
+    (fonts / "NotoSansArabic-Regular.ttf").write_bytes(b"")
+    (fonts / "DejaVuSans.ttf").write_bytes(b"")
+
+    assert cap.font_in_dirs("Noto Sans Arabic", [str(fonts)]) is True
+    assert cap.font_in_dirs("IBM Plex Sans Arabic", [str(fonts)]) is False
+
+    # A variable font names its axes in the filename; it is still the family.
+    (fonts / "IBMPlexSansArabic[wght].ttf").write_bytes(b"")
+    assert cap.font_in_dirs("IBM Plex Sans Arabic", [str(fonts)]) is True
+
+    # A directory that is not there cannot answer, and must not answer "missing":
+    # a wrong warning on every render trains people to ignore it.
+    assert cap.font_in_dirs("Noto Sans Arabic", [str(tmp_path / "nope")]) is None
+
+    # Only the file suffixes CoreText loads count.
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "NotoSansArabic-Regular.txt").write_bytes(b"")
+    assert cap.font_in_dirs("Noto Sans Arabic", [str(other)]) is False
+
+    # And the whole path: no fc-list on darwin consults those dirs, not None.
+    monkeypatch.setattr(cap.sys, "platform", "darwin")
+    monkeypatch.setattr(cap, "MAC_FONT_DIRS", (str(fonts),))
+    import shutil as _shutil
+    monkeypatch.setattr(_shutil, "which", lambda _: None)
+    assert cap.font_available("Noto Sans Arabic") is True
+    assert cap.font_available("Comic Sans MS") is False
+
+    # Linux without fc-list is still "unknown".
+    monkeypatch.setattr(cap.sys, "platform", "linux")
+    assert cap.font_available("Noto Sans Arabic") is None
