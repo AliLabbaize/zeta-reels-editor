@@ -39,6 +39,10 @@ shot-scraper install                        # Playwright browser, for screenshot
 cp .env.example .env                        # then paste GEMINI_API_KEY
 ```
 
+The key is read from the environment first and from `.env` at the repo root
+second, so an exported or cloud-injected `GEMINI_API_KEY` always wins over the
+file. `.env` is gitignored; never put a key in `<videos_dir>`, those get shared.
+
 Needs `ffmpeg` and `ffprobe` with libass (caption burn-in). Python 3.11.
 WhisperX alignment runs on CPU; a GPU only makes it faster.
 

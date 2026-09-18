@@ -41,6 +41,7 @@ from typing import Any, Callable, Iterable, Sequence
 try:
     from . import config as cfgmod
     from . import diff_align, textnorm, words as wordsmod
+    from . import env
     from .gemini_client import LLM, LLMError, default_llm
     from .paths import EditPaths
     from .words import Word, WordsDoc
@@ -48,6 +49,7 @@ except ImportError:  # running as `python helpers/transcribe_gemini.py`
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from helpers import config as cfgmod
     from helpers import diff_align, textnorm, words as wordsmod
+    from helpers import env
     from helpers.gemini_client import LLM, LLMError, default_llm
     from helpers.paths import EditPaths
     from helpers.words import Word, WordsDoc
@@ -481,9 +483,12 @@ def cohere_arabic(wav: Path, cfg: dict, llm: LLM | None = None, **kw: Any) -> Wo
         raise TranscribeError(
             "cohere is not installed: uv pip install -e '.[second-opinion]'") from exc
 
+    env.load_env()
     api_key = os.environ.get("COHERE_API_KEY")
     if not api_key:
-        raise TranscribeError("COHERE_API_KEY is not set (see .env.example)")
+        raise TranscribeError("COHERE_API_KEY is not set: put it in the "
+                              "environment or in .env at the repo root "
+                              "(see .env.example)")
 
     client = cohere.ClientV2(api_key=api_key)
     duration = wav_duration(wav)

@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from .env import load_env
+
 DEFAULT_TEXT_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_VISION_MODEL = "gemini-3.5-flash-lite"
 
@@ -63,6 +65,7 @@ class LLM:
 
     def __post_init__(self) -> None:
         if self.api_key is None:
+            load_env()
             self.api_key = os.environ.get("GEMINI_API_KEY") or None
         if self.cache_dir:
             Path(self.cache_dir).mkdir(parents=True, exist_ok=True)
