@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+vendor/
+edit/
+*.mp4
+*.mov
+*.wav
+!tests/fixtures/**/*.wav
+.pytest_cache/
+.uv/

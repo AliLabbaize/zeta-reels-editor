@@ -1,0 +1,49 @@
+# Source resolution policy (Zeta hard rule 12: the owner's original source
+# beats secondary coverage, and nothing unverified ships).
+
+priority:
+  - links_txt          # URLs Ali already pasted
+  - owner_domain       # the entity's own site / official account
+  - official_filing    # SEC, BAM, CMR, official registries
+  - reputable_press    # last resort
+
+# entity -> official domains and handles. Extend as Zeta covers new companies.
+owners:
+  OpenAI:      {domains: ["openai.com"], handles: ["@OpenAI"]}
+  Anthropic:   {domains: ["anthropic.com"], handles: ["@AnthropicAI"]}
+  Nvidia:      {domains: ["nvidia.com", "nvidianews.nvidia.com"], handles: ["@nvidia"]}
+  SpaceX:      {domains: ["spacex.com"], handles: ["@SpaceX"]}
+  Tesla:       {domains: ["tesla.com", "ir.tesla.com"], handles: ["@Tesla"]}
+  Apple:       {domains: ["apple.com"], handles: ["@Apple"]}
+  Google:      {domains: ["blog.google", "deepmind.google"], handles: ["@Google"]}
+  Meta:        {domains: ["about.fb.com", "ai.meta.com"], handles: ["@Meta"]}
+  Microsoft:   {domains: ["blogs.microsoft.com"], handles: ["@Microsoft"]}
+  BankAlMaghrib: {domains: ["bkam.ma"], handles: []}
+
+# Trusted secondary press, used only when no owner source carries the claim.
+reputable_press:
+  - reuters.com
+  - apnews.com
+  - bloomberg.com
+  - ft.com
+  - wsj.com
+  - theverge.com
+  - techcrunch.com
+  - lematin.ma
+  - medias24.com
+  - hespress.com
+
+# Never capture from these, whatever the search returns.
+blocklist:
+  - pinterest.com
+  - facebook.com
+  - quora.com
+  - medium.com          # republished content, unstable URLs
+  - "*.blogspot.com"
+  - contentfarm.example
+
+capture:
+  timeout_s: 45
+  wait_for_network_idle: true
+  dismiss_cookie_banners: true
+  retries_per_slot: 1     # one retry with a different selector, then drop the slot

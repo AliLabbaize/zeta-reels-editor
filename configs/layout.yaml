@@ -1,0 +1,90 @@
+# Output formats and insert (screenshot) geometry.
+#
+# WHY THE CAPTURE WIDTH IS SMALL
+# ------------------------------
+# A screenshot is only useful if the viewer can READ it on a phone. Capture
+# width is therefore derived from the destination, not from the desktop:
+#
+#   safe_width_px / (capture_width_css * retina) >= ~1.0
+#
+# i.e. one CSS pixel of the page must survive as at least one device pixel in
+# the delivered frame. Capturing an article at 1600 CSS px and fitting it into
+# the 820 px safe column of a Reel halves every glyph -- unreadable. Capturing
+# at 800 CSS px @2x and fitting the 1600 px image into 820 px lands at ~1.02.
+# Change `capture.width` only together with the arithmetic above.
+#
+# Screenshots are FITTED, never cropped: a cropped headline can change what the
+# source says, which is a factual problem, not a design one.
+
+default_aspect: "9:16"
+
+aspects:
+  "9:16":                        # Instagram Reels / TikTok / Shorts
+    resolution: [1080, 1920]
+    fps: 30
+    # Instagram UI chrome, measured on a 1080x1920 Reel:
+    #   top    - back button / "Reels" header
+    #   bottom - username, caption, audio ticker, tab bar
+    #   right  - like / comment / share / more action rail
+    safe_area: {top: 250, bottom: 420, left: 60, right: 200}
+    capture: {width: 800, retina: true}
+  "4:5":                         # Instagram feed (tallest allowed feed crop)
+    resolution: [1080, 1350]
+    fps: 30
+    safe_area: {top: 60, bottom: 120, left: 60, right: 60}
+    capture: {width: 900, retina: true}
+  "1:1":
+    resolution: [1080, 1080]
+    fps: 30
+    safe_area: {top: 60, bottom: 100, left: 60, right: 60}
+    capture: {width: 900, retina: true}
+  "16:9":                        # YouTube
+    resolution: [1920, 1080]
+    fps: 30
+    safe_area: {top: 60, bottom: 120, left: 120, right: 120}
+    capture: {width: 1600, retina: true}
+
+inserts:
+  default_layout: fit_card       # fit_card | split | fullframe_pip
+  layouts:
+    fit_card:
+      # Screenshot scaled to FIT the safe box (contain, no crop), rounded card
+      # on a blurred, darkened still of the facecam. Facecam stays visible as a
+      # PiP so the viewer keeps the face anchor.
+      card_radius_px: 28
+      card_padding_px: 24
+      card_background: "#FFFFFF"
+      frame_background: blurred_facecam   # blurred_facecam | solid
+      frame_background_solid: "#0B0B0D"
+      frame_background_blur: 28
+      frame_background_dim: 0.45
+      card_anchor: upper            # upper | center -- upper keeps the card out
+                                    # of the caption band and above the face PiP
+      facecam_pip: true
+      facecam_scale: 0.30
+      facecam_corner: bottom_right  # inside the safe area, above the UI band
+      facecam_radius_px: 24
+    split:
+      # Screenshot in the top block, facecam filling the bottom block. The
+      # classic vertical news look; best for wide article headers.
+      screenshot_share: 0.5
+      gap_px: 16
+      background: "#0B0B0D"
+    fullframe_pip:
+      # Screenshot covers the frame (crops to fill), facecam as PiP. Only for
+      # images whose edges carry no information (charts on flat backgrounds).
+      facecam_scale: 0.28
+      facecam_corner: bottom_right
+      allow_crop: true
+
+  timing:
+    lead_in_s: 0.3               # overlay starts before the trigger word
+    default_duration_s: 4.5
+    min_duration_s: 2.5
+    max_duration_s: 8.0
+    fade_in_s: 0.15
+    fade_out_s: 0.15
+    ken_burns_zoom: 0.03         # 3% slow zoom; 0 disables
+  density:
+    max_per_minute: 4.0          # hard ceiling regardless of the style profile
+    min_gap_between_inserts_s: 1.5

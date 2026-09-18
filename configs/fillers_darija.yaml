@@ -1,0 +1,19 @@
+# Seed filler lists. `zeta learn` overwrites these in style_profile.json --
+# the profile wins at plan time; this file is only the cold-start default.
+
+remove:
+  ary: ["يعني", "زعما", "واخا", "آه", "إيه", "هاكداك", "شحال هاداك"]
+  fr: ["euh", "donc", "bon", "genre", "ben", "voilà quoi"]
+  en: ["uh", "um", "like", "you know", "I mean"]
+
+# Discourse markers that carry Zeta's voice. Never auto-strip these.
+keep:
+  ary: ["إيوا", "صافي", "شوف", "ها هي", "دابا"]
+  fr: ["alors", "bref"]
+  en: ["so", "look"]
+
+false_start_markers:
+  # A repeated 1-3 token prefix within `window_s` of itself is a false start.
+  window_s: 2.5
+  min_prefix_tokens: 1
+  max_prefix_tokens: 3

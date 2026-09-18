@@ -1,0 +1,30 @@
+[project]
+name = "zeta-reels-editor"
+version = "0.1.0"
+description = "Auto editor for Zeta Darija facecam news reels: transcribe, learn style, cut, source-screenshot, caption, render."
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0",
+    "numpy>=1.26",
+    "pillow>=10.0",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+llm = ["google-genai>=1.0.0"]
+align = ["whisperx==3.8.6", "torch>=2.8.0", "torchaudio>=2.8.0"]
+learn = ["scenedetect[opencv]>=0.6.4", "opencv-python-headless>=4.9"]
+shots = ["shot-scraper>=1.6", "matplotlib>=3.8"]
+second-opinion = ["cohere>=5.13"]
+dev = ["pytest>=8.0", "jiwer>=3.0"]
+
+[project.scripts]
+zeta = "cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "helpers"]
+
+[tool.setuptools]
+py-modules = ["cli"]
+packages = ["helpers"]

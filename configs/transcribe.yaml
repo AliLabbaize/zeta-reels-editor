@@ -1,0 +1,75 @@
+# Stage 1 transcription configuration.
+#
+# `default_backend` is the text source. Timing authority is ALWAYS local and
+# acoustic (WhisperX forced alignment) unless `use_backend_timings: true`.
+# Run `zeta benchmark` before changing the default. Do not decide from vibes.
+
+default_backend: gemini_flash_lite   # gemini_flash_lite | gemini_transcribe | cohere_arabic
+use_backend_timings: false           # true only for gemini_transcribe word-timestamp mode
+
+second_opinion:
+  enabled: false                     # needs COHERE_API_KEY; flags uncertain spans
+  backend: cohere_arabic
+  disagreement_threshold: 0.35       # normalized token distance over a span -> flagged
+  recheck_uncertain: true            # re-transcribe flagged spans from short excerpts
+  excerpt_margin_s: 1.0
+  excerpt_min_s: 5.0
+  excerpt_max_s: 15.0
+
+backends:
+  gemini_flash_lite:
+    model: gemini-3.5-flash-lite
+    fallback_model: gemini-3.1-flash-lite
+    # VERBATIM. Never SMART: filler removal destroys the editorial signal (hard rule 8).
+    chunk_s: 600
+    chunk_overlap_s: 2.0
+    temperature: 0.0
+  gemini_transcribe:
+    model: gemini-3.5-transcribe
+    mode: VERBATIM
+    word_timestamp: true
+    chunk_s: 900
+  cohere_arabic:
+    model: cohere-transcribe-arabic-07-2026
+    api_max_bytes: 26214400          # 25 MB API cap -> chunk audio below this
+    chunk_s: 240
+    local_weights: null              # set to a local path to run the open weights instead
+
+alignment:
+  model: jonatasgrosman/wav2vec2-large-xlsr-53-arabic
+  english_model: WAV2VEC2_ASR_BASE_960H
+  interpolate_method: ignore
+  device: auto                       # auto | cpu | cuda
+  batch_size: 8
+  # Latin/English spans are aligned with the English model and bounded by the
+  # timestamps of the neighbouring Arabic words.
+  align_latin_spans: true
+
+qa:
+  min_coverage: 0.95                 # fraction of words with usable timings
+  max_word_duration_s: 2.0
+  allow_overlaps: false
+  realign_flagged_windows: true      # one automatic re-align pass on failing windows
+  window_pad_s: 2.0
+
+# Custom vocabulary: biases gemini_transcribe and seeds the alignment alias map.
+# Max 1000 terms. Names, tickers, French/English terms that Darija ASR mangles.
+custom_vocabulary:
+  - Zeta
+  - زيتا
+  - Nvidia
+  - OpenAI
+  - Anthropic
+  - SpaceX
+  - Tesla
+  - Bitcoin
+  - startup
+  - milliard
+  - million
+  - pourcent
+  - investissement
+  - Maroc
+  - Casablanca
+  - درهم
+  - دولار
+  - البورصة

@@ -1,0 +1,61 @@
+# Word-level ASS captions. Burned LAST in the filter chain (hard rule 1),
+# times remapped to the OUTPUT timeline (hard rule 5).
+
+font:
+  # Must cover Arabic + Latin in one face or Latin words in a mixed line change
+  # metrics mid-line. libass does the RTL shaping; the font does the coverage.
+  primary: "Noto Sans Arabic"
+  fallback: "IBM Plex Sans Arabic"
+  latin_fallback: "Noto Sans"
+
+aspects:
+  "9:16":                      # Reels / TikTok / Shorts
+    resolution: [1080, 1920]
+    words_per_line: [2, 4]
+    font_size: 22
+    margin_v: 480              # px from bottom of a 1920-tall frame: clears the
+                               # Reels caption block + right action rail overlap
+    margin_h: 90
+    max_chars_per_line: 22
+  "4:5":                       # Instagram feed
+    resolution: [1080, 1350]
+    words_per_line: [2, 4]
+    font_size: 20
+    margin_v: 200
+    margin_h: 80
+    max_chars_per_line: 24
+  "1:1":
+    resolution: [1080, 1080]
+    words_per_line: [3, 5]
+    font_size: 20
+    margin_v: 140
+    margin_h: 70
+    max_chars_per_line: 28
+  "16:9":                      # YouTube
+    resolution: [1920, 1080]
+    words_per_line: [4, 7]
+    font_size: 18
+    margin_v: 90
+    margin_h: 120
+    max_chars_per_line: 42
+
+chunking:
+  break_on_punctuation: true
+  break_on_gap_ms: 300
+  min_cue_duration_s: 0.30
+  max_cue_duration_s: 3.0
+
+style:
+  bold: true
+  primary_colour: "&H00FFFFFF"
+  outline_colour: "&H00000000"
+  back_colour: "&H80000000"
+  border_style: 1
+  outline: 3
+  shadow: 0
+  alignment: 2                 # bottom-centre
+  uppercase_latin: false       # never uppercase Arabic; Latin-only lines may
+  highlight_active_word: true  # karaoke-style \k timing on the spoken word
+  highlight_colour: "&H0000D7FF"
+
+export_srt: true               # plain SRT alongside, for platform upload
