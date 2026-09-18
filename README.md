@@ -82,5 +82,6 @@ cannot reach the render even by accident.
 `helpers/render.py` and `helpers/timeline_view.py` are vendored verbatim from
 [browser-use/video-use](https://github.com/browser-use/video-use) (MIT) and are
 frozen by `tests/test_vendor_unchanged.py`. Behaviour changes go in wrappers.
-See `CLAUDE.md` for the build rules and `docs/ZETA_AUTO_EDITOR_SPEC.md` for the
-full design.
+See `CLAUDE.md` for the build rules, `docs/ZETA_AUTO_EDITOR_SPEC.md` for the
+full design, and `docs/DEVIATIONS.md` for where the build departs from it and
+why.

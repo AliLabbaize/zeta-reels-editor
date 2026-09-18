@@ -69,6 +69,9 @@ never reaches the render.
   `gemini_client.register_mock`.
 * Comments explain **why**, where the reason is not obvious from the code.
 
+Deliberate departures from the spec are recorded in `docs/DEVIATIONS.md`.
+Add to that file rather than silently absorbing a decision.
+
 ## Things that look like improvements and are not
 
 * Letting the planner return timestamps "to save a step". It hallucinates them.

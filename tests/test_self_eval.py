@@ -290,3 +290,25 @@ def test_evaluate_finds_captions_spelled_the_render_py_way(tmp_path, edl, monkey
                                   run_views=False)
     # The cue was read back off the burned file, so the overlay conflict is seen.
     assert any(f.check == "caption_under_overlay" for f in findings)
+
+
+def test_timeline_transcript_is_remapped_to_the_output_timeline(tmp_path, simple_edl,
+                                                                doc_factory):
+    """Labels on a cut render must point at output times, or they mislead."""
+    import json as _json
+
+    from helpers import self_eval as se
+    from helpers.words import Word, WordsDoc
+
+    doc = WordsDoc(words=[Word("wahed", 2.5, 2.9),    # inside range 1 -> 0.5
+                          Word("jouj", 8.0, 8.4),     # cut -> dropped
+                          Word("tlata", 10.5, 10.9)], # inside range 2 -> 4.5
+                   source={"name": "raw01"})
+    out = se.timeline_transcript(doc, simple_edl, tmp_path / "tl.json")
+
+    words = _json.loads(out.read_text(encoding="utf-8"))["words"]
+    assert [w["text"] for w in words] == ["wahed", "tlata"]
+    assert words[0]["start"] == pytest.approx(0.5, abs=1e-3)
+    assert words[1]["start"] == pytest.approx(4.5, abs=1e-3)
+    # The vendored tool requires Scribe's key names.
+    assert all(set(w) >= {"text", "type", "start", "end"} for w in words)

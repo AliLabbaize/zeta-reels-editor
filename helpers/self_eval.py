@@ -374,6 +374,40 @@ def run_timeline_view(video: str | Path, start: float, end: float, out_png: Path
     return out_png if out_png.exists() else None
 
 
+def timeline_transcript(doc, edl: EDL, out_path: str | Path) -> Path | None:
+    """Write a transcript `timeline_view.py` can label the filmstrip with.
+
+    Two translations are needed and both matter. The vendored tool reads
+    ElevenLabs Scribe's shape (`text`, `type`) while words.json carries
+    `word`/`display`; and it is pointed at the RENDERED file, whose timeline is
+    the output timeline, while words.json is on the source timeline. Labels at
+    source times over a cut render would be worse than no labels at all - they
+    would send whoever is reviewing a boundary to the wrong place.
+    """
+    words = getattr(doc, "words", None)
+    if not words:
+        return None
+    out: list[dict] = []
+    for w in words:
+        if not getattr(w, "timed", False):
+            continue
+        source = doc.source.get("name") if isinstance(getattr(doc, "source", None), dict) else None
+        source = source or (edl.ranges[0].source if edl.ranges else None)
+        t = edl.to_output_time(source, w.start)
+        if t is None:                       # the word was cut; it has no place here
+            continue
+        end = edl.to_output_time(source, min(w.end, w.end - 1e-6))
+        out.append({"text": w.display or w.word, "type": "word",
+                    "start": round(t, 3),
+                    "end": round(end if end is not None else t + w.duration, 3)})
+    if not out:
+        return None
+    path = Path(out_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"words": out}, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
 def render_views(video: str | Path, edl: EDL, out_dir: Path, *,
                  transcript: str | Path | None = None,
                  window_s: float = BOUNDARY_WINDOW_S) -> tuple[dict[str, Path], list[Finding]]:
@@ -533,8 +567,14 @@ def evaluate(edl: EDL, video: str | Path, *, cues: Iterable[Any] | None = None,
     findings += check_audio_pops(video, edl, samples=samples, sample_rate=sample_rate)
 
     if views is None and run_views and edit_paths is not None:
+        # A WordsDoc has to be translated and remapped before the vendored tool
+        # can read it; a path is passed straight through.
+        tl = transcript
+        if transcript is not None and not isinstance(transcript, (str, Path)):
+            tl = timeline_transcript(transcript, edl,
+                                     edit_paths.verify / "_timeline_words.json")
         views, view_findings = render_views(video, edl, edit_paths.verify,
-                                            transcript=transcript)
+                                            transcript=tl)
         findings += view_findings
     views = views or {}
 
