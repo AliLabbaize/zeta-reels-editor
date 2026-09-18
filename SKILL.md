@@ -1,0 +1,1 @@
+.claude/skills/zeta-editor/SKILL.md
