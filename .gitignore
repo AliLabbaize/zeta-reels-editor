@@ -13,3 +13,6 @@ tests/fixtures/*.mp4
 tests/fixtures/*.wav
 .pytest_cache/
 .uv/
+
+# Build metadata from `uv pip install -e .` (the [align] extra, among others).
+*.egg-info/
