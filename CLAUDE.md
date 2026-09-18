@@ -69,6 +69,7 @@ never reaches the render.
   `gemini_client.register_mock`.
 * Comments explain **why**, where the reason is not obvious from the code.
 
+`docs/STATUS.md` says what has actually run on real material and what has not.
 Deliberate departures from the spec are recorded in `docs/DEVIATIONS.md`.
 Add to that file rather than silently absorbing a decision.
 
