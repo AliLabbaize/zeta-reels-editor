@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
-import os
 import re
 import sys
 from dataclasses import dataclass, field, asdict
@@ -34,7 +33,7 @@ if __package__ in (None, ""):  # `python helpers/research.py`
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from helpers import config as cfgmod
-from helpers.gemini_client import LLM, LLMUnavailable
+from helpers.gemini_client import LLM
 from helpers.paths import EditPaths
 
 # Domains that are "the official filing" rather than "a company page". Kept in
@@ -389,7 +388,7 @@ def _best(candidates: Iterable[Candidate]) -> Candidate | None:
     if not usable:
         return None
     # Stable within a rank: earlier candidates are the better-ranked search hits.
-    return min(usable, key=lambda c: (c.rank, usable.index(c)))
+    return min(enumerate(usable), key=lambda pair: (pair[1].rank, pair[0]))[1]
 
 
 def _links_for_claim(claim: Claim, cfg: dict) -> list[str]:
@@ -431,7 +430,7 @@ def _search_candidates(claim: Claim, cfg: dict, llm: LLM | None) -> list[Candida
     try:
         out = llm.generate(prompt, system=_SEARCH_SYSTEM, schema=SEARCH_SCHEMA,
                            tools=("google_search",))
-    except (LLMUnavailable, Exception) as exc:  # a dead search must not kill the run
+    except Exception as exc:  # a dead search must flag the slot, not kill the run
         bad = Candidate(source_type="unresolved", origin="search",
                         rejected_reason=f"search unavailable: {exc}")
         return [bad]

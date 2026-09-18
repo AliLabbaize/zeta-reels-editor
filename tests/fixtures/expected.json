@@ -1,0 +1,27 @@
+{
+ "kept_text": "salam a khoya OpenAI جابت مليار دولار السوق طلع بزاف Nvidia زادت عشرة بالمية صافي شكرا",
+ "published_text": "salam a khoya OpenAI جابت مليار دولار السوق طلع بزاف Nvidia زادت عشرة بالمية",
+ "filler_indices": [
+  3,
+  8,
+  9
+ ],
+ "published_drop_indices": [
+  3,
+  8,
+  9,
+  17,
+  18
+ ],
+ "cut_ratio_filler_only": 0.1579,
+ "insert": {
+  "slot_id": "slot_01",
+  "trigger_word_index": 4,
+  "claim": "OpenAI raised one billion dollars",
+  "entity": "OpenAI",
+  "url": "https://openai.com/index/fixture-announcement/",
+  "duration_s": 4.0,
+  "trigger_time_source": 3.68
+ },
+ "total_duration_s": 15.75
+}
