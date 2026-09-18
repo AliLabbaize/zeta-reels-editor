@@ -75,10 +75,25 @@ the same request returns the same shape four times, each after a longer backoff,
 and the real reason arrives minutes late. Retries still apply to transport
 failures, and the fallback model still gets its turn.
 
+**Confirmed against the live API (2026-09-18), and it is not the whole story.**
+`gemini-3.5-transcribe` does answer with `resp.text is None` and the transcript
+in `candidates[0].content.parts[0].audio_transcription.text`; `_response_text`
+reads it, and the SDK's own "non-text parts in the response" warning names the
+same part. But the backend still cannot complete a call: the model rejects
+`system_instruction` (400 `Developer instruction is not enabled for this
+model`) and JSON mode (400 `JSON mode is not enabled for this model`), both of
+which `_gemini_chunked` sends unconditionally, and it answers in plain text
+rather than the `{"segments": [...]}` the parser needs. So the part reader is
+right and currently unreachable in production. See `docs/STATUS.md` item 3;
+untangling it is a design decision, because hard rule 8's VERBATIM instruction
+has nowhere to go once `system_instruction` is refused.
+
 ## 10. Not yet done, and why
 
 * **The Stage 1 benchmark has not been run.** It needs `GEMINI_API_KEY` and
-  three past videos with human-corrected transcripts.
+  three past videos with human-corrected transcripts. It also needs
+  `gemini_transcribe` to work at all - see deviation 9 - since that backend is
+  one of the candidates being scored.
   `configs/transcribe.yaml` therefore still names `gemini_flash_lite` as the
   default, which is the spec's v2 recommendation and not a measured result.
   `zeta benchmark --manifest …` fills the table. Do not decide from vibes.
