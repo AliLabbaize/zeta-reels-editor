@@ -9,6 +9,21 @@ insert with its reason.
 
 It learns Ali's editing style from past videos first, then applies it.
 
+## What you need
+
+* **A Gemini API key.** Transcription, the edit plan, the English captions and
+  the screenshot verification all go through it. There is no way around this one.
+* **ffmpeg/ffprobe with libass**, Python 3.11, and the Noto Arabic caption font.
+* **For source search, either** the Claude Code CLI (used on the author's
+  machine, on a Claude subscription) **or** a Gemini key on a paid tier for
+  `google_search` grounding. `search.backend: auto` takes whichever is there.
+* Optional: `yt-dlp` for `zeta fetch`, a browser for screenshots
+  (`shot-scraper install`).
+
+`CLAUDE.md` and `.claude/` are house rules and a skill for Claude Code, which is
+what this was built with. Nothing in the pipeline reads them: the CLI is plain
+Python and runs the same without them.
+
 ## How it works
 
 ```
@@ -89,11 +104,10 @@ cannot burn subtitles. Two more platform notes:
   installed-font check reads `~/Library/Fonts` and `/Library/Fonts` instead of
   `fc-list`. Install the font into one of those - `brew install --cask` does -
   or the check cannot see it.
-* **Source search runs through the Claude Code CLI** (`claude -p`), on your own
-  Claude subscription: the Gemini free tier has no search-grounding quota.
-  Install Claude Code and log in, or set `search.backend: gemini` in
-  `configs/sources.yaml`. Gemini still does transcription, translation and the
-  screenshot verification.
+* **Source search picks a backend.** `search.backend: auto` uses headless
+  Claude Code (`claude -p`) when that CLI is installed, else Gemini's
+  `google_search` grounding, which needs a key on a paid tier - the free tier
+  answers 429. Either works; nobody needs both.
 
 A cloud session cannot do alignment at all if `huggingface.co` is outside its
 egress policy: whisperx downloads the wav2vec2 weights on first use, and the

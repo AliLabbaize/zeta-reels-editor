@@ -75,7 +75,10 @@ capture:
 # Ali's Claude subscription; the Gemini key's free tier has no search grounding
 # quota (429). gemini = Gemini google_search grounding. DEVIATIONS 13.
 search:
-  backend: claude_cli
+  # auto = headless Claude Code (`claude -p`) when the CLI is installed, else
+  # Gemini google_search grounding, which needs a key on a paid tier (the free
+  # tier answers 429). Force one with `claude_cli` or `gemini`.
+  backend: auto
   model: sonnet
   timeout_s: 240
 

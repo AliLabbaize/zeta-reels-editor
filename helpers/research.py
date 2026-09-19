@@ -22,6 +22,7 @@ import fnmatch
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -423,6 +424,19 @@ def _links_for_claim(claim: Claim, cfg: dict) -> list[str]:
     return out
 
 
+def search_backend(scfg: dict) -> str:
+    """Which search backend to use: `claude_cli`, `gemini`, or pick one.
+
+    `auto` (the default) uses headless Claude Code when the `claude` CLI is on
+    PATH, else Gemini's google_search grounding. Nobody has to own both: this
+    repo's author runs Claude, a Gemini key on a paid tier does the same job.
+    """
+    want = str(scfg.get("backend") or "auto").lower()
+    if want != "auto":
+        return want
+    return "claude_cli" if shutil.which("claude") else "gemini"
+
+
 def _claude_search(prompt: str, scfg: dict) -> dict:
     """Web search through headless Claude Code, which bills Ali's subscription.
 
@@ -466,7 +480,7 @@ def _search_candidates(claim: Claim, cfg: dict, llm: LLM | None) -> list[Candida
     scfg = cfg.get("search") or {}
     try:
         # Mock mode stays on the Gemini mock: tests never hit the network.
-        if scfg.get("backend") == "claude_cli" and not os.environ.get("ZETA_LLM_MOCK"):
+        if search_backend(scfg) == "claude_cli" and not os.environ.get("ZETA_LLM_MOCK"):
             out = _claude_search(prompt, scfg)
         else:
             out = (llm or LLM()).generate(prompt, system=_SEARCH_SYSTEM, schema=SEARCH_SCHEMA,

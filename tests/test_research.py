@@ -255,3 +255,11 @@ def test_claude_cli_search_feeds_the_same_candidate_filter(monkeypatch):
 
     assert seen["cmd"][:2] == ["claude", "-p"]
     assert chosen.url == "https://openai.com/index/funding/"  # medium.com is blocklisted
+
+
+def test_the_search_backend_follows_what_is_installed(monkeypatch):
+    monkeypatch.setattr(research.shutil, "which", lambda n: "/usr/local/bin/claude")
+    assert research.search_backend({}) == "claude_cli"
+    monkeypatch.setattr(research.shutil, "which", lambda n: None)
+    assert research.search_backend({}) == "gemini"          # no Claude: Gemini grounding
+    assert research.search_backend({"backend": "claude_cli"}) == "claude_cli"
