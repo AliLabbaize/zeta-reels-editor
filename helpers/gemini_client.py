@@ -145,7 +145,11 @@ class LLM:
             "temperature": temperature,
             "tools": list(tools),
         }
-        key = _request_key(req)
+        # Names alone let a re-capture saved over shot.png get the old verdict
+        # back: the walk past a bot wall was re-reading the wall's answer.
+        key = _request_key(req | {"content": [
+            hashlib.sha256(Path(p).read_bytes()).hexdigest() if Path(p).exists() else None
+            for p in list(images) + list(files)]})
 
         if use_cache:
             hit = self._cached(key)

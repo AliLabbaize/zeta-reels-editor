@@ -26,6 +26,7 @@ import argparse
 import json
 import shutil
 import subprocess
+from urllib.parse import urlparse
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,17 +41,28 @@ from helpers import config as cfgmod
 # reason a capture shows a grey overlay instead of the headline. Best-effort by
 # design: an unknown banner must not fail the capture, the vision check will.
 COOKIE_BANNER_JS = """
-(() => {
-  const pats = /^(accept|agree|allow|got it|i agree|ok|tout accepter|accepter|j'accepte|consent|continue)/i;
-  const ids = ['#onetrust-accept-btn-handler', '.fc-cta-consent', '#didomi-notice-agree-button',
-               '[data-testid="cookie-policy-manage-dialog-accept-button"]', '.qc-cmp2-summary-buttons button'];
-  for (const sel of ids) { const el = document.querySelector(sel); if (el) { el.click(); } }
-  for (const el of document.querySelectorAll('button, a[role=button], [role=button]')) {
-    const t = (el.innerText || '').trim();
-    if (t && t.length < 40 && pats.test(t)) { el.click(); break; }
-  }
-  return true;
-})()
+new Promise(done => {
+  // Nothing is clicked. Accepting a consent banner reloads the page on some
+  // sites (OneTrust on Fortune and CNN), which destroyed the capture; banners
+  // are fixed-position, so hiding fixed and sticky elements removes them, and
+  // the ads and headers that float over the headline with them.
+  const pin = () => {
+    document.documentElement.style.setProperty('overflow', 'auto', 'important');
+    document.body.style.setProperty('overflow', 'auto', 'important');
+    for (const el of document.querySelectorAll('body *')) {
+      const p = getComputedStyle(el).position;
+      if (p === 'fixed' || p === 'sticky') el.style.setProperty('display', 'none', 'important');
+    }
+    // Headline cards: bring the h1 to the top of the card-sized viewport.
+    const h = document.querySelector('article h1, main h1, h1');
+    // Headline a third of the way down, not at the top: what sits above it
+    // (the logo, the site name) stays in the shot. Ali: "get the logo too".
+    if (h) window.scrollTo(0, h.getBoundingClientRect().top + window.scrollY - window.innerHeight / 3);
+  };
+  // Re-pin for 1.5 s: late ads above the article push the headline back down.
+  const t = setInterval(pin, 150);
+  setTimeout(() => { clearInterval(t); pin(); setTimeout(() => done(true), 150); }, 1500);
+})
 """
 
 
@@ -99,6 +111,17 @@ def safe_width_px(aspect_cfg: dict) -> int:
     return w - int(safe.get("left", 0)) - int(safe.get("right", 0))
 
 
+def card_box_px(aspect_cfg: dict) -> tuple[int, int]:
+    """The box fit_card fits a screenshot into, from the same geometry code."""
+    from helpers import build_overlay  # lazy: build_overlay imports this module's peers
+    layout = cfgmod.load("layout")
+    # A 1x100000 image is height-bound and a 100000x1 one width-bound, so their
+    # fitted sizes are the box height and width of the DEFAULT layout.
+    tall = build_overlay.compute_geometry((1, 100000), aspect_cfg, layout)
+    wide = build_overlay.compute_geometry((100000, 1), aspect_cfg, layout)
+    return wide["image"].w, tall["image"].h
+
+
 def readability_ratio(aspect_cfg: dict) -> float:
     """Delivered pixels per captured CSS pixel: `safe_width / capture.width`.
 
@@ -134,6 +157,8 @@ def capture_settings(*, aspect: str | None = None, sources_cfg: dict | None = No
         "image_width_px": width * (2 if retina else 1),
         "safe_width_px": safe_width_px(acfg),
         "readability": readability_ratio(acfg),
+        # The card box's shape at capture width, so a viewport shot fills the card.
+        "viewport_height": round(width * card_box_px(acfg)[1] / card_box_px(acfg)[0]),
         "timeout_s": timeout_s,
         "timeout_ms": int(timeout_s * 1000),
         "retries": int(capture_policy.get("retries_per_slot", 1)),
@@ -153,7 +178,8 @@ def cookie_banner_js() -> str:
 def shot_scraper_cmd(url: str, output: str | Path, *, selector: str | None,
                      width: int, retina: bool, timeout_ms: int,
                      javascript: str | None = None,
-                     wait_for_network_idle: bool = True) -> list[str]:
+                     wait_for_network_idle: bool = True,
+                     height: int | None = None) -> list[str]:
     """The exact argv. Pure, so the tests can assert on it without Playwright."""
     cmd: list[str] = ["shot-scraper", "shot", url, "-o", str(output),
                       "--width", str(int(width))]
@@ -161,12 +187,69 @@ def shot_scraper_cmd(url: str, output: str | Path, *, selector: str | None,
         cmd.append("--retina")
     if selector:
         cmd += ["--selector", selector]
+    elif height:
+        # No element to crop to: without a height shot-scraper grabs the whole
+        # page (30,000 px on a press release), which fit_card shrinks to a sliver.
+        cmd += ["--height", str(int(height))]
     if wait_for_network_idle:
         cmd += ["--wait-for", NETWORK_IDLE_JS]
+    # Let late redirects and soft reloads (Fortune, CNN) finish BEFORE the
+    # headline script runs: one landing mid-script destroyed the capture.
+    cmd += ["--wait", "2500"]
     if javascript:
         cmd += ["--javascript", javascript]
     cmd += ["--timeout", str(int(timeout_ms))]
     return cmd
+
+
+HEADLINE_BLOCK_JS = Path(__file__).with_name("headline_block.js")
+
+
+def capture_headline_block(url: str, out_png: str | Path, *, aspect: str | None = None,
+                           sources_cfg: dict | None = None, layout_cfg: dict | None = None,
+                           attempt: int = 0) -> CaptureResult:
+    """Crop exactly the headline block of an article, sharp at 2x.
+
+    Fixed-size viewports cut headlines and bodies in half ("you cut stuff in
+    the middle"). The page script measures the kicker, headline, subtitle and
+    byline text boxes; this shoots that rectangle plus padding. A viewport clip,
+    not a full-page one: a full-page capture resizes the window and pages sized
+    in vh (TechCrunch) reflow under the clip.
+    """
+    s = capture_settings(aspect=aspect, sources_cfg=sources_cfg, layout_cfg=layout_cfg)
+    try:
+        from playwright.sync_api import sync_playwright  # ships with shot-scraper
+    except ImportError as exc:
+        raise CaptureError("headline capture needs the [shots] extra (playwright)") from exc
+    out = Path(out_png)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    width = int(s["width"])
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page(viewport={"width": width, "height": 1400},
+                                    device_scale_factor=2 if s["retina"] else 1)
+            page.goto(url, wait_until="load", timeout=int(s["timeout_ms"]))
+            page.wait_for_timeout(2500)
+            r = page.evaluate(HEADLINE_BLOCK_JS.read_text(encoding="utf-8"))
+            if not r:
+                raise CaptureError(f"no visible headline on {url}")
+            page.evaluate(f"window.scrollTo(0, {max(0, r['y'] - 120)})")
+            page.wait_for_timeout(300)
+            top = r["y"] - page.evaluate("window.scrollY")
+            pad, pad_bottom = 24, 24
+            x = max(0, r["x"] - pad)
+            clip = {"x": x, "y": max(0, top - pad), "width": min(width - x, r["w"] + 2 * pad),
+                    "height": min(1400, r["h"] + pad + pad_bottom)}
+            page.screenshot(path=str(out), clip=clip)
+        except CaptureError:
+            raise
+        except Exception as exc:
+            raise CaptureError(f"headline capture failed on {url}: {exc}") from exc
+        finally:
+            browser.close()
+    return CaptureResult(path=out, source_type="html", selector="headline-block",
+                         attempt=attempt, command=["playwright", url])
 
 
 def capture_url(url: str, out_png: str | Path, *, selector: str | None = None,
@@ -187,7 +270,8 @@ def capture_url(url: str, out_png: str | Path, *, selector: str | None = None,
         url, out, selector=selector, width=s["width"], retina=s["retina"],
         timeout_ms=s["timeout_ms"],
         javascript=cookie_banner_js() if s["dismiss_cookie_banners"] else None,
-        wait_for_network_idle=s["wait_for_network_idle"])
+        wait_for_network_idle=s["wait_for_network_idle"],
+        height=s["viewport_height"])
 
     proc = runner(cmd, capture_output=True, text=True,
                   timeout=s["timeout_s"] + 30)
@@ -213,6 +297,77 @@ def pdftoppm_cmd(pdf: str | Path, page: int, prefix: str | Path, *,
             str(pdf), str(prefix)]
 
 
+def _pdf_top_with_pdfium(pdf: str | Path, page: int, out: Path, s: dict,
+                         attempt: int) -> CaptureResult:
+    """No poppler (Homebrew cannot install it on Ali's Mac): render with pdfium.
+
+    Keeps the TOP of the page in the card's shape, the way an HTML capture is a
+    viewport: title, authors and date, which is what an original-source card is.
+    """
+    try:
+        import pypdfium2 as pdfium
+    except ImportError as exc:
+        raise CaptureError("PDF capture needs pdftoppm (poppler) or the [shots] "
+                           "extra's pypdfium2: uv pip install pypdfium2") from exc
+    doc = pdfium.PdfDocument(str(pdf))
+    try:
+        pg = doc[max(0, int(page) - 1)]
+        img = pg.render(scale=s["image_width_px"] / pg.get_width()).to_pil().convert("RGB")
+    finally:
+        doc.close()
+    # Trim to the printed area: a report's title page is a logo up top and the
+    # title halfway down, and a plain top-of-page slice showed only the logo.
+    # The card then fits (never crops) what is left; only a text-dense page
+    # taller than twice the card is cut to its top, like an HTML viewport.
+    ink = img.convert("L").point(lambda v: 255 if v < 235 else 0).getbbox()
+    if ink:
+        m = round(img.width * 0.03)
+        img = img.crop((max(0, ink[0] - m), max(0, ink[1] - m),
+                        min(img.width, ink[2] + m), min(img.height, ink[3] + m)))
+    # Close the empty gaps between printed bands (logo ... title ... subtitle):
+    # a title page is mostly air, and fitted whole it becomes a sliver on screen.
+    from PIL import Image as _Image
+    ink_rows = [any(v < 235 for v in row) for row in _rows(img.convert("L"))]
+    bands, start = [], None
+    for y, inked in enumerate(ink_rows + [False]):
+        if inked and start is None:
+            start = y
+        elif not inked and start is not None:
+            bands.append((start, y))
+            start = None
+    gap = round(img.width * 0.05)
+    if len(bands) > 1:
+        h_total = sum(b - a for a, b in bands) + gap * (len(bands) - 1)
+        packed = _Image.new("RGB", (img.width, h_total), (255, 255, 255))
+        y = 0
+        for a, b in bands:
+            packed.paste(img.crop((0, a, img.width, b)), (0, y))
+            y += (b - a) + gap
+        img = packed
+    h = round(img.width * 2 * s["viewport_height"] / s["width"])
+    m = round(img.width * 0.04)
+    framed = _Image.new("RGB", (img.width + 2 * m, min(img.height, h) + 2 * m), (255, 255, 255))
+    framed.paste(img.crop((0, 0, img.width, min(img.height, h))), (m, m))
+    framed.save(out)
+    return CaptureResult(path=out, source_type="pdf", attempt=attempt,
+                         command=["pypdfium2", str(pdf), str(page)], note=f"page {page} (top)")
+
+
+def _rows(gray):
+    w, h = gray.size
+    data = gray.tobytes()
+    return [data[y * w:(y + 1) * w] for y in range(h)]
+
+
+def _download_pdf(url: str, dest: Path, timeout: float) -> Path:
+    import requests  # base dependency, imported lazily like the rest
+    r = requests.get(url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0"})
+    if r.status_code != 200 or not r.content.startswith(b"%PDF"):
+        raise CaptureError(f"could not download the PDF {url} ({r.status_code})")
+    dest.write_bytes(r.content)
+    return dest
+
+
 def capture_pdf_page(pdf: str | Path, page: int, out_png: str | Path, *,
                      aspect: str | None = None, sources_cfg: dict | None = None,
                      layout_cfg: dict | None = None, attempt: int = 0,
@@ -222,8 +377,7 @@ def capture_pdf_page(pdf: str | Path, page: int, out_png: str | Path, *,
     out.parent.mkdir(parents=True, exist_ok=True)
 
     if shutil.which("pdftoppm") is None and runner is subprocess.run:
-        raise CaptureError("pdftoppm is not installed: it ships with poppler-utils "
-                           "(apt install poppler-utils / brew install poppler)")
+        return _pdf_top_with_pdfium(pdf, page, out, s, attempt)
 
     prefix = out.with_suffix("")
     cmd = pdftoppm_cmd(pdf, page, prefix, image_width_px=s["image_width_px"])
@@ -313,6 +467,7 @@ def capture_for_slot(slot_dir: str | Path, meta: dict, *, aspect: str | None = N
                      attempt: int = 0, selector: str | None = None,
                      sources_cfg: dict | None = None, layout_cfg: dict | None = None,
                      capture_url_fn=capture_url, capture_pdf_fn=capture_pdf_page,
+                     download_pdf_fn=None,
                      render_chart_fn=render_chart) -> CaptureResult:
     """Capture the evidence for one resolved slot and update its `meta.json`.
 
@@ -337,6 +492,12 @@ def capture_for_slot(slot_dir: str | Path, meta: dict, *, aspect: str | None = N
     elif meta.get("pdf") or url.lower().endswith(".pdf"):
         pdf = meta.get("pdf") or {}
         local = pdf.get("path") or meta.get("local_pdf")
+        if not local and url:
+            # Original reports are often PDFs on a CDN that serves bots fine
+            # (cdn.openai.com) while the HTML site walls them off.
+            local = str((download_pdf_fn or _download_pdf)(url, d / "source.pdf",
+                                      capture_settings(aspect=aspect, sources_cfg=sources_cfg,
+                                                       layout_cfg=layout_cfg)["timeout_s"]))
         if not local:
             raise CaptureError(
                 f"{meta.get('slot_id')}: PDF source needs meta.pdf.path (the "
@@ -346,10 +507,34 @@ def capture_for_slot(slot_dir: str | Path, meta: dict, *, aspect: str | None = N
     else:
         if not url:
             raise CaptureError(f"{meta.get('slot_id')}: no url to capture")
-        selectors = meta.get("selectors") or []
-        sel = selector or (selectors[attempt] if attempt < len(selectors)
-                           else (selectors[-1] if selectors else None))
-        result = capture_url_fn(url, out, selector=sel, attempt=attempt, **kw)
+        # Articles are shot as a headline viewport (the JS scrolls to the h1);
+        # only presets that target one element (an X post) crop to a selector.
+        host = urlparse(url).netloc.lower()
+        selectors = (meta.get("selectors") or []) if host.endswith(("x.com", "twitter.com")) else []
+        # A preset selector missing from the page is normal (every site differs),
+        # so fall through the rest of the list, then to the plain viewport.
+        # ponytail: a dead URL also walks the list; split errors if that gets slow.
+        used = {c.get("selector") for c in meta.get("captures") or []}
+        tries = [selector] if selector else \
+            [x for x in selectors if x not in used] + ([None] if None not in used else [])
+        if not selectors and not selector and "headline-block" not in used \
+                and capture_url_fn is capture_url:
+            tries = ["headline-block"] + tries
+        if not tries:
+            raise CaptureError(f"{meta.get('slot_id')}: every selector already tried")
+        for sel in tries:
+            if sel == "headline-block":
+                try:
+                    result = capture_headline_block(url, out, attempt=attempt, **kw)
+                    break
+                except CaptureError:
+                    continue
+            try:
+                result = capture_url_fn(url, out, selector=sel, attempt=attempt, **kw)
+                break
+            except CaptureError:
+                if sel is tries[-1]:
+                    raise
 
     meta.setdefault("captures", []).append(result.to_dict())
     meta["image"] = str(result.path)

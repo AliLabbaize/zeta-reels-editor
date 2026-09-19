@@ -127,7 +127,7 @@ def parse_ass(path: str | Path) -> list[CueWindow]:
         while "{" in text and "}" in text:  # drop override blocks
             a, b = text.index("{"), text.index("}")
             text = text[:a] + text[b + 1:]
-        out.append(CueWindow(t(fields[1]), t(fields[2]), text.replace("\\N", " ").strip()))
+        out.append(CueWindow(t(fields[1]), t(fields[2]), text.replace("\\N", " ").replace("\u200f", "").strip()))  # RLM: captions.render_ass
     return out
 
 
@@ -228,6 +228,8 @@ def _covers_caption_band(layout_name: str | None, layout_cfg: dict | None = None
         return False
     if "screenshot_share" in block:
         return False  # split: the screenshot owns the top block only
+    if "card_bottom" in block:
+        return False  # float: a see-through frame whose card ends above the captions
     return True
 
 
@@ -303,7 +305,7 @@ def extract_pcm(video: str | Path, start: float = 0.0, duration: float | None = 
 
 def find_pops(samples, sample_rate: int, boundaries_s: Sequence[float], *,
               offset_s: float = 0.0, fade_ms: float = FADE_MS,
-              ratio: float = 8.0, floor: float = 0.05) -> list[dict]:
+              ratio: float = 2.0, floor: float = 0.05) -> list[dict]:
     """Sample-level discontinuities inside the fade window of each boundary.
 
     With a 30 ms fade the waveform has to reach the join smoothly, so the
@@ -327,6 +329,12 @@ def find_pops(samples, sample_rate: int, boundaries_s: Sequence[float], *,
             continue
         window = diff[a:b]
         peak = float(window.max())
+        # "The material around it": 250 ms either side, outside the fade. The
+        # file-wide median is mostly silence, so any join near speech read as a
+        # pop (6 false errors on a real take, every step smaller than the speech).
+        span = int(sample_rate * 0.25)
+        near = np.concatenate([diff[max(0, a - span):a], diff[b:b + span]])
+        local = float(near.max()) if near.size else local
         r = peak / (local + 1e-6)
         if peak >= floor and r >= ratio:
             pops.append({"t_output": round(float(t), 3), "peak": round(peak, 4),
@@ -487,7 +495,11 @@ def check_insert_frames(views: dict[str, Path], edl: EDL, llm=None) -> list[Find
         ans = _ask_vision(
             llm, png,
             "This filmstrip spans the start of a screenshot insert in a news reel. "
-            f"The insert is supposed to show: {claim!r}. Answer JSON "
+            f"The insert is a headline card for this story: {claim!r}"
+            + (f" (the video's main story: {(o.meta or {}).get('story')!r})"
+               if (o.meta or {}).get("story") else "")
+            + ". shows_claim is true when a readable headline about that same story is "
+            "on screen, whatever its wording. Answer JSON "
             '{"shows_claim": bool, "caption_visible": bool, "evidence": str}.',
             _INSERT_SCHEMA)
         if ans is None:

@@ -20,8 +20,8 @@ dependencies = [
 [project.optional-dependencies]
 llm = ["google-genai>=1.0.0"]
 align = ["whisperx==3.8.6", "torch>=2.8.0", "torchaudio>=2.8.0"]
-learn = ["scenedetect[opencv]>=0.6.4", "opencv-python-headless>=4.9"]
-shots = ["shot-scraper>=1.6", "matplotlib>=3.8"]
+learn = ["scenedetect>=0.6.4", "opencv-python-headless>=4.9,<5", "opencv-python<5"]  # 5.0 dropped CascadeClassifier; scenedetect pulls opencv-python
+shots = ["shot-scraper>=1.6", "matplotlib>=3.8", "pypdfium2>=4.30"]
 fetch = ["yt-dlp>=2025.1.1"]
 second-opinion = ["cohere>=5.13"]
 dev = ["pytest>=8.0", "jiwer>=3.0"]

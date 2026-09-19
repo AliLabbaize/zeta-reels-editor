@@ -158,7 +158,7 @@ def test_geometry_is_json_serialisable_for_the_report():
     import json
     geom = bo.compute_geometry((1600, 900), _acfg("9:16"), LAYOUT)
     blob = json.loads(json.dumps(bo.geometry_to_dict(geom)))
-    assert blob["layout"] == "fit_card"
+    assert blob["layout"] == LAYOUT["inserts"]["default_layout"]
     assert set(blob["card"]) == {"x", "y", "w", "h"}
 
 
@@ -219,10 +219,11 @@ def test_overlay_for_slot_starts_one_lead_in_before_the_trigger():
     assert ov.meta["url"].startswith("https://openai.com/")
     assert ov.meta["trigger_word"] == "OpenAI"
     assert ov.meta["trigger_time_output"] == 14.5
-    assert ov.meta["layout"] == "fit_card"
+    assert ov.meta["layout"] == LAYOUT["inserts"]["default_layout"]
     # Relative to edl.json's own directory (`<videos_dir>/edit/`), which is how
-    # the vendored render.py resolves it -- no repeated `edit/` segment.
-    assert ov.file == "screenshots/slot_01/overlay.mp4"
+    # the vendored render.py resolves it -- no repeated `edit/` segment. A float
+    # card carries alpha, so it is a .mov.
+    assert ov.file == "screenshots/slot_01/overlay.mov"
 
 
 def test_overlay_is_clamped_to_the_cut_at_both_ends():
@@ -292,7 +293,7 @@ def test_overlay_file_path_matches_the_slot_directory(tmp_path):
     ov = bo.overlay_for_slot("slot_07", _verified_meta(slot_id="slot_07"),
                              trigger_time_output=5.0, total_duration_s=30.0,
                              layout_cfg=LAYOUT)
-    assert ov.file == "screenshots/slot_07/overlay.mp4"
+    assert ov.file == "screenshots/slot_07/overlay.mov"
     # ... and that is exactly the slot directory EditPaths creates, seen from edit/.
     assert paths.slot("slot_07") == paths.edit / ov.file.rsplit("/", 1)[0]
 
@@ -314,7 +315,8 @@ def test_build_overlay_composites_then_encodes_at_the_aspect_fps(tmp_path):
         return Proc()
 
     out = bo.build_overlay(shot, tmp_path / "overlay.mp4", facecam_still=face,
-                           aspect="9:16", duration_s=30.0, runner=runner)
+                           aspect="9:16", layout="fit_card", duration_s=30.0,
+                           runner=runner)
 
     # The still frame is composited before ffmpeg is ever invoked.
     assert (tmp_path / "overlay_frame.png").exists()
@@ -341,7 +343,7 @@ def test_defaults_come_from_configs_layout_yaml_when_nothing_is_passed():
     ov = bo.overlay_for_slot("slot_01", _verified_meta(), trigger_time_output=9.0,
                              total_duration_s=60.0)
     assert ov.start_in_output == pytest.approx(9.0 - LAYOUT["inserts"]["timing"]["lead_in_s"])
-    assert ov.meta["layout"] == LAYOUT["inserts"]["default_layout"] == "fit_card"
+    assert ov.meta["layout"] == LAYOUT["inserts"]["default_layout"] == "cutout"
 
 
 def test_overlay_path_resolves_the_way_the_vendored_renderer_resolves_it(tmp_path):
@@ -350,4 +352,30 @@ def test_overlay_path_resolves_the_way_the_vendored_renderer_resolves_it(tmp_pat
     ov = bo.overlay_for_slot("slot_01", _verified_meta(), trigger_time_output=5.0,
                              total_duration_s=30.0, layout_cfg=LAYOUT)
     # render.py resolves overlay files against the directory holding edl.json.
-    assert render.resolve_path(ov.file, paths.edit) == paths.slot("slot_01") / "overlay.mp4"
+    assert render.resolve_path(ov.file, paths.edit) == paths.slot("slot_01") / "overlay.mov"
+
+
+def test_a_float_card_stays_out_of_the_top_band_and_the_caption_band():
+    geom = bo.compute_geometry((1600, 1200), _acfg("9:16"), LAYOUT, layout="float")
+    card = geom["card"]
+    assert card.y >= 1920 * LAYOUT["inserts"]["top_reserved"]   # Ali's title space
+    assert card.y + card.h <= round(1920 * LAYOUT["inserts"]["layouts"]["float"]["card_bottom"])
+    assert geom["cropped"] is False and geom["pip"] is None
+
+
+def test_a_float_overlay_is_encoded_with_alpha(tmp_path):
+    Image = pytest.importorskip("PIL.Image")
+    shot = tmp_path / "shot.png"
+    Image.new("RGB", (1600, 800), (255, 255, 255)).save(shot)
+    seen: list = []
+
+    class Proc:
+        returncode = 0
+        stderr = ""
+
+    out = bo.build_overlay(shot, tmp_path / "overlay.mp4", aspect="9:16", layout="float",
+                           runner=lambda cmd, **kw: seen.append(cmd) or Proc())
+    assert out["file"].endswith(".mov")
+    assert "qtrle" in seen[0] and "alpha=1" in " ".join(seen[0])
+    with Image.open(tmp_path / "overlay_frame.png") as frame:
+        assert frame.mode == "RGBA" and frame.getpixel((5, 5))[3] == 0   # see-through

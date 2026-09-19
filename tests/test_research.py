@@ -193,12 +193,13 @@ def test_research_writes_meta_with_the_full_candidate_log(tmp_path):
     assert [c["url"] for c in meta["candidates"]] == [
         "https://medium.com/@x/openai", "https://openai.com/index/funding/"]
     assert meta["selectors"][0] == "article header"
-    # Meta is not in `owners`, so openai.com is an unlisted domain for slot_02's
-    # claim: the slot is dropped with a reason rather than quietly filled.
-    assert out["shippable"] == ["slot_01"]
-    assert out["dropped"]["slot_02"] == "no allowed source carried this claim"
+    # openai.com is a listed company's own site, so it resolves for slot_02's
+    # Meta claim too; whether its headline is about THAT story is the vision
+    # check's call (verify_screenshot), not the domain list's.
+    assert out["shippable"] == ["slot_01", "slot_02"]
     slot2 = [s for s in out["slots"] if s["slot_id"] == "slot_02"][0]
-    assert all(c.get("rejected_reason") for c in slot2["candidates"])
+    assert slot2["verified"] is False
+    assert any(c.get("rejected_reason") for c in slot2["candidates"])  # medium.com
 
 
 def test_shots_yml_is_shot_scraper_multi_shape(tmp_path):
@@ -233,3 +234,24 @@ def test_x_post_gets_the_post_container_selector():
     sels = research.selector_preset("https://x.com/OpenAI/status/1", claim, SOURCES)
     assert sels[0] == 'article[data-testid="tweet"]'
     assert len(sels) > 1        # verify_screenshot.py needs a different one to retry with
+
+
+def test_claude_cli_search_feeds_the_same_candidate_filter(monkeypatch):
+    import json as _json
+    import subprocess as _sp
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        out = {"is_error": False, "structured_output": {"candidates": [
+            {"url": "https://openai.com/index/funding/"},
+            {"url": "https://medium.com/@someone/openai-round"}]}}
+        return _sp.CompletedProcess(cmd, 0, _json.dumps(out), "")
+
+    monkeypatch.delenv("ZETA_LLM_MOCK", raising=False)
+    monkeypatch.setattr(research.subprocess, "run", fake_run)
+    cfg = dict(SOURCES, search={"backend": "claude_cli", "model": "sonnet"})
+    chosen = research.resolve_source(_claim(), cfg, None)
+
+    assert seen["cmd"][:2] == ["claude", "-p"]
+    assert chosen.url == "https://openai.com/index/funding/"  # medium.com is blocklisted

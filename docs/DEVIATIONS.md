@@ -106,3 +106,69 @@ has nowhere to go once `system_instruction` is refused.
   Expect to need `--cookies-from-browser` for Instagram.
 * **`shot-scraper`'s multi-YAML keys and the cookie-dismissal JS** have not been
   run against a live browser. One smoke run once `[shots]` is installed.
+
+## 11. `gemini_flash_lite` runs gemini-3.1-flash-lite first, not 3.5
+
+Found on the first real take (`IMG_5829.MOV`, 28 s, 2026-09-18). With the
+spec's prompt, both flash-lite models wrote Darija in Arabizi (`l9aw`, `m3a`,
+`ba3diyatohom`) and ignored "Arabic script". The Arabic wav2vec2 model cannot
+align that honestly, and `pack_transcripts` tagged the Darija phrases `[fr]`
+and `[en]`. With one concrete mixed-script example added to `SYSTEM_PROMPT`,
+3.1 answered in Arabic script with French and English left in Latin
+(`part 2`, `agents`, `packages`), identically on two runs at temperature 0.
+3.5 stayed in Arabizi. So the backend is unchanged and only its model order
+is swapped in `configs/transcribe.yaml`. This is not a benchmark result: it
+chooses the only model whose output meets the spec's script requirement.
+Known slip: 3.1 rendered the French opener "vraiment" as "فعلا", which is a
+translation and not verbatim. `zeta benchmark` should still score both models.
+
+## 12. The cold-start profile has no cut_ratio target
+
+`cli._load_profile` used to invent `cut_ratio: 0.25` when there was no
+`style_profile.json`. On the first real take (28 s, few fillers) the planner's
+first answer was a clean 0.11 filler trim. Validation rejected it as "cut more
+aggressively", and the retry broke its own insert anchor while cutting real
+content. Until `zeta learn` has measured Ali's ratio, the cold start sets
+`None`: `derive_cuts` already treats that as "no band", and the prompt says
+to cut only what the rules say.
+
+## 13. Source search runs on Claude Code, not Gemini grounding
+
+Ali's Gemini key gets 429 `RESOURCE_EXHAUSTED` on every `google_search`
+grounded call, while plain calls succeed: the key's tier has no search quota.
+Ali pays for Claude, not for Gemini search, and wants Gemini kept to
+transcription. `research._claude_search` therefore runs `claude -p` (headless
+Claude Code with WebSearch/WebFetch, structured output via `--json-schema`) when
+`configs/sources.yaml: search.backend` is `claude_cli`. It runs from a temp dir
+with no setting sources, so no hooks or plugins load. This is a second LLM door
+beside `gemini_client`, confined to the one function `resolve_source` already
+marked as the swap point. The candidates go through the same allowlist and
+blocklist, and vision verification stays on Gemini. Under `ZETA_LLM_MOCK` the
+Gemini mock is used, so tests stay offline.
+
+The first live run also showed the planner inventing `prefer_source` URLs
+(`zeta.ma/tech-updates`) and claims ("vulnerability") the speaker never made.
+Both are now forbidden in `plan_edit.SYSTEM_PROMPT`.
+
+## 14. `fast_render` reuses the cut segments; render.py still does the work
+
+Rule "per segment extract then lossless concat" is unchanged: `helpers/fast_render.py`
+calls `render.extract_all_segments`, `render.concat_segments`,
+`render.build_final_composite` and `render.apply_loudnorm_two_pass` in that
+order and adds one thing, a cache key over (ranges, sources, grade, fps,
+preview/draft) written next to `base.mp4`. A revision that only changes cards or
+captions skips the extraction (~2 min of a ~4.5 min part). `--fresh` forces it.
+render.py itself is untouched (docs/VENDOR.md); `tests/test_fast_render.py`
+proves the base is reused only when the cut is identical.
+
+## 15. Alignment runs on the Apple GPU when there is no CUDA
+
+`resolve_device` now answers `mps` before `cpu`. Measured on the 43 s outro:
+cpu 45.3 s, mps 15.4 s, word times identical to the millisecond (max diff
+0.000 s). `alignment.device` in `configs/transcribe.yaml` still overrides.
+
+## 16. Screenshot capture and verification run four at a time
+
+`cli.stage_research` walks every slot's candidates in a thread pool: each slot
+is a browser page plus a vision call and touches only its own directory. On the
+6 min two-parter this was the slowest part of research.

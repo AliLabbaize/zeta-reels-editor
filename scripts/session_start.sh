@@ -60,6 +60,9 @@ fi
 missing=()
 command -v ffmpeg  >/dev/null 2>&1 || missing+=("ffmpeg")
 command -v ffprobe >/dev/null 2>&1 || missing+=("ffprobe")
+# Homebrew's ffmpeg (7.1+) ships without libass/freetype: captions cannot burn.
+[[ "$(ffmpeg -hide_banner -filters 2>/dev/null)" == *" subtitles "* ]] \
+  || missing+=("ffmpeg with libass (brew's lacks it; use a static build in ~/.local/bin)")
 fc-list :lang=ar family 2>/dev/null | grep -qi "noto sans arabic" || missing+=("Noto Sans Arabic")
 [ -n "${GEMINI_API_KEY:-}" ] || { [ -f .env ] && grep -q '^GEMINI_API_KEY=.' .env; } || missing+=("GEMINI_API_KEY")
 

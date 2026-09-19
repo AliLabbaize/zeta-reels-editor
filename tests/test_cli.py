@@ -78,6 +78,9 @@ def _seed_transcript(session) -> None:
     doc = WordsDoc.load(FIXTURES / "raw01.words.json")
     doc.source = dict(doc.source) | {"sha256": entry["sha256"], "name": "raw01"}
     doc.save(session / "edit" / "transcripts" / "raw01.words.json")
+    # A cached transcript only counts once its QA passed (cli.stage_transcribe).
+    (session / "edit" / "transcripts" / "raw01.qa.json").write_text(
+        json.dumps({"ok": True, "source": {"sha256": entry["sha256"]}}), encoding="utf-8")
 
 
 @pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg not installed")

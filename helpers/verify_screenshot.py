@@ -57,12 +57,23 @@ class Verdict:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
 
-def verify_prompt(claim: str) -> str:
-    return (f"Does this image visibly show: {claim}\n"
+def verify_prompt(claim: str, story: str = "") -> str:
+    # Zeta inserts are headline cards: the page must visibly be the article or
+    # post about the claim, with its headline readable. A captcha, bot wall,
+    # cookie wall, error page, ad or unrelated story is a no.
+    # Same STORY, not same wording: "in talks to be acquired for $13B" was
+    # rejected for "valued at $13 billion". A headline card shows what the
+    # video is talking about; it is not proof of one figure.
+    return (f"This screenshot illustrates a moment of a news video. It should show: {claim}\n"
+            "Is it clearly that page, article, product, organisation or post (its "
+            "headline, name or logo readable)? Different wording is fine. "
+            + (f"A headline about the video's main story also counts: {story}. " if story else "")
+            + "A captcha, bot check, cookie wall, error page, advert, or something "
+            "about a different subject is NO.\n"
             "Answer JSON {visible: bool, evidence: str}.")
 
 
-def verify_image(image: str | Path, claim: str, *, llm: LLM | None = None,
+def verify_image(image: str | Path, claim: str, *, llm: LLM | None = None, story: str = "",
                  attempt: int = 0, selector: str | None = None) -> Verdict:
     """One vision call. A failed call is `visible: false`, never an exception.
 
@@ -76,7 +87,7 @@ def verify_image(image: str | Path, claim: str, *, llm: LLM | None = None,
         return Verdict(visible=False, evidence="", attempt=attempt, selector=selector,
                        image=str(img), error=f"no image at {img}")
     try:
-        out = llm.vision_json(verify_prompt(claim), img, VERIFY_SCHEMA)
+        out = llm.vision_json(verify_prompt(claim, story), img, VERIFY_SCHEMA)
     except Exception as exc:
         return Verdict(visible=False, evidence="", attempt=attempt, selector=selector,
                        image=str(img), error=f"vision check unavailable: {exc}")
@@ -116,7 +127,7 @@ def verify_slot(slot_dir: str | Path, *, llm: LLM | None = None,
         max_retries = int((cfg.get("capture") or {}).get("retries_per_slot", 1))
 
     attempts: list[Verdict] = []
-    verdict = verify_image(meta.get("image", ""), claim, llm=llm, attempt=0,
+    verdict = verify_image(meta.get("image", ""), claim, llm=llm, attempt=0, story=meta.get("story", ""),
                            selector=selectors[0] if selectors else None)
     attempts.append(verdict)
 
@@ -134,7 +145,7 @@ def verify_slot(slot_dir: str | Path, *, llm: LLM | None = None,
                                     selector=selectors[attempt],
                                     error=f"retry capture failed: {exc}"))
             break
-        verdict = verify_image(meta.get("image", ""), claim, llm=llm, attempt=attempt,
+        verdict = verify_image(meta.get("image", ""), claim, llm=llm, attempt=attempt, story=meta.get("story", ""),
                                selector=selectors[attempt])
         attempts.append(verdict)
         attempt += 1

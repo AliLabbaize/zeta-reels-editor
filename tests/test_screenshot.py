@@ -179,9 +179,7 @@ def test_render_chart_refuses_empty_figures(tmp_path):
 # -- slot dispatch ----------------------------------------------------------
 
 
-def test_capture_for_slot_writes_meta_and_picks_the_selector_by_attempt(tmp_path):
-    meta = {"slot_id": "slot_01", "url": "https://openai.com/a",
-            "selectors": ["article header", "article", "main"], "source_type": "owner"}
+def test_an_article_is_one_headline_viewport_and_an_x_post_walks_its_selectors(tmp_path):
     seen: list = []
 
     def fake_capture_url(url, out, *, selector, attempt, **kw):
@@ -190,17 +188,23 @@ def test_capture_for_slot_writes_meta_and_picks_the_selector_by_attempt(tmp_path
         return screenshot.CaptureResult(path=Path(out), source_type="html",
                                         selector=selector, attempt=attempt)
 
-    screenshot.capture_for_slot(tmp_path, meta, aspect="9:16", sources_cfg=SOURCES,
+    art = {"slot_id": "slot_01", "url": "https://openai.com/a",
+           "selectors": ["article header", "article", "main"], "source_type": "owner"}
+    screenshot.capture_for_slot(tmp_path, art, aspect="9:16", sources_cfg=SOURCES,
                                 capture_url_fn=fake_capture_url)
-    screenshot.capture_for_slot(tmp_path, meta, aspect="9:16", attempt=1,
-                                sources_cfg=SOURCES, capture_url_fn=fake_capture_url)
-
-    assert seen == ["article header", "article"]
+    assert seen == [None]                   # the JS scrolls to the h1; no crop
     written = json.loads((tmp_path / "meta.json").read_text(encoding="utf-8"))
-    assert written["image"].endswith("shot_retry1.png")
-    assert len(written["captures"]) == 2
-    # The editorial source_type (owner) survives an html capture.
-    assert written["source_type"] == "owner"
+    assert written["source_type"] == "owner"  # editorial type survives the capture
+    with pytest.raises(screenshot.CaptureError):  # same shot again is no retry
+        screenshot.capture_for_slot(tmp_path, written, aspect="9:16", attempt=1,
+                                    sources_cfg=SOURCES, capture_url_fn=fake_capture_url)
+
+    seen.clear()
+    post = {"slot_id": "slot_02", "url": "https://x.com/OpenAI/status/1",
+            "selectors": ["article[data-testid=tweet]"], "source_type": "owner"}
+    screenshot.capture_for_slot(tmp_path / "x", post, aspect="9:16", sources_cfg=SOURCES,
+                                capture_url_fn=fake_capture_url)
+    assert seen == ["article[data-testid=tweet]"]
 
 
 def test_capture_for_slot_marks_a_chart_as_a_chart(tmp_path):
@@ -222,10 +226,30 @@ def test_capture_for_slot_without_a_url_is_an_error(tmp_path):
                                     sources_cfg=SOURCES)
 
 
-def test_capture_for_slot_pdf_needs_the_downloaded_file(tmp_path):
-    meta = {"slot_id": "slot_04", "url": "https://sec.gov/a.pdf"}
-    with pytest.raises(CaptureError, match="meta.pdf.path"):
-        screenshot.capture_for_slot(tmp_path, meta, aspect="9:16", sources_cfg=SOURCES)
+def test_a_pdf_source_is_downloaded_then_rendered(tmp_path):
+    meta = {"slot_id": "slot_04", "url": "https://cdn.openai.com/report.pdf"}
+    got = {}
+
+    def fake_download(url, dest, timeout):
+        dest.write_bytes(b"%PDF-1.7")
+        return dest
+
+    def fake_pdf(local, page, out, **kw):
+        got.update(local=local, page=page)
+        Path(out).write_bytes(b"\x89PNG")
+        return screenshot.CaptureResult(path=Path(out), source_type="pdf")
+
+    screenshot.capture_for_slot(tmp_path, meta, aspect="9:16", sources_cfg=SOURCES,
+                                capture_pdf_fn=fake_pdf, download_pdf_fn=fake_download)
+    assert got == {"local": str(tmp_path / "source.pdf"), "page": 1}
+
+
+def test_a_pdf_that_will_not_download_fails_the_capture(tmp_path):
+    def refuse(url, dest, timeout):
+        raise CaptureError("could not download the PDF")
+    with pytest.raises(CaptureError, match="could not download"):
+        screenshot.capture_for_slot(tmp_path, {"slot_id": "s", "url": "https://x/a.pdf"},
+                                    aspect="9:16", sources_cfg=SOURCES, download_pdf_fn=refuse)
 
 
 def test_module_imports_without_pulling_in_the_optional_extras():
@@ -240,6 +264,11 @@ def test_module_imports_without_pulling_in_the_optional_extras():
 
 
 # -- verification: nothing unverified ever ships -----------------------------
+
+
+def _offline_capture(*a, **kw):
+    """A retry must never reach shot-scraper: it would load the real URL."""
+    raise screenshot.CaptureError("offline test")
 
 
 def _slot(tmp_path, **meta):
@@ -272,7 +301,8 @@ def test_verified_slot_records_its_evidence(tmp_path):
     d = _slot(tmp_path)
     _vision([{"visible": True, "evidence": "headline reads 'OpenAI raises $40B'"}])
 
-    verdict = verify_screenshot.verify_slot(d, llm=LLM(), sources_cfg=SOURCES)
+    verdict = verify_screenshot.verify_slot(d, llm=LLM(), sources_cfg=SOURCES,
+                                            capture_fn=_offline_capture)
 
     assert verdict.visible is True
     meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
@@ -330,7 +360,8 @@ def test_a_vision_outage_drops_the_slot_instead_of_shipping_it(tmp_path):
         raise RuntimeError("vision API down")
     gemini_client.register_mock(dead)
 
-    verdict = verify_screenshot.verify_slot(d, llm=LLM(), sources_cfg=SOURCES)
+    verdict = verify_screenshot.verify_slot(d, llm=LLM(), sources_cfg=SOURCES,
+                                            capture_fn=_offline_capture)
 
     assert verdict.visible is False
     meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
@@ -342,5 +373,34 @@ def test_a_missing_capture_is_not_verifiable(tmp_path):
     d = _slot(tmp_path, image=str(tmp_path / "gone.png"))
     _vision([{"visible": True, "evidence": "should never be asked"}])
 
-    verdict = verify_screenshot.verify_slot(d, llm=LLM(), sources_cfg=SOURCES)
+    verdict = verify_screenshot.verify_slot(d, llm=LLM(), sources_cfg=SOURCES,
+                                            capture_fn=_offline_capture)
     assert verdict.visible is False and "no image" in (verdict.error or "")
+
+
+def test_a_viewport_capture_is_bounded_to_the_card_shape():
+    # Without --height shot-scraper grabs the full page: 1600x30926 on a real
+    # press release, which fit_card would shrink past reading.
+    cmd = screenshot.shot_scraper_cmd("https://x.test", "o.png", selector=None, width=800,
+                                      retina=True, timeout_ms=1000, height=1220)
+    assert cmd[cmd.index("--height") + 1] == "1220"
+    with_sel = screenshot.shot_scraper_cmd("https://x.test", "o.png", selector="article",
+                                           width=800, retina=True, timeout_ms=1000, height=1220)
+    assert "--height" not in with_sel
+
+
+def test_a_new_capture_saved_over_the_old_one_is_verified_afresh(tmp_path, monkeypatch):
+    # The cache once keyed on the file NAME: a TechCrunch shot saved over a
+    # Bloomberg bot wall at the same shot.png got the wall's "no" back.
+    answers = iter(['{"visible": false, "evidence": "bot wall"}',
+                    '{"visible": true, "evidence": "headline"}'])
+    gemini_client.register_mock(None)
+    llm = LLM(cache_dir=tmp_path / "cache")
+    monkeypatch.setattr(type(llm), "mock_mode", property(lambda self: False), raising=False)
+    monkeypatch.setattr(llm, "require", lambda: None)
+    monkeypatch.setattr(llm, "_call_with_retry", lambda req, images, files: next(answers))
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(b"\x89PNG wall")
+    assert verify_screenshot.verify_image(shot, "claim", llm=llm).visible is False
+    shot.write_bytes(b"\x89PNG headline")
+    assert verify_screenshot.verify_image(shot, "claim", llm=llm).visible is True

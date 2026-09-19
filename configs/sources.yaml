@@ -19,6 +19,7 @@ owners:
   Meta:        {domains: ["about.fb.com", "ai.meta.com"], handles: ["@Meta"]}
   Microsoft:   {domains: ["blogs.microsoft.com"], handles: ["@Microsoft"]}
   BankAlMaghrib: {domains: ["bkam.ma"], handles: []}
+  HuggingFace: {domains: ["huggingface.co"], handles: ["@huggingface"]}
 
 # Trusted secondary press, used only when no owner source carries the claim.
 reputable_press:
@@ -32,6 +33,28 @@ reputable_press:
   - lematin.ma
   - medias24.com
   - hespress.com
+  # Added for headline cards: major outlets that carry the story's headline.
+  - nbcnews.com
+  - cnbc.com
+  - cnn.com
+  - bbc.com
+  - bbc.co.uk
+  - nytimes.com
+  - theguardian.com
+  - axios.com
+  - fortune.com
+  - forbes.com
+  - businessinsider.com
+  - wired.com
+  - arstechnica.com
+  - theregister.com
+  - venturebeat.com
+  - zdnet.com
+  - engadget.com
+  - nextgov.com
+  - qz.com
+  - finance.yahoo.com
+  - decrypt.co
 
 # Never capture from these, whatever the search returns.
 blocklist:
@@ -47,3 +70,12 @@ capture:
   wait_for_network_idle: true
   dismiss_cookie_banners: true
   retries_per_slot: 1     # one retry with a different selector, then drop the slot
+
+# Who runs the web search. claude_cli is headless Claude Code (`claude -p`), on
+# Ali's Claude subscription; the Gemini key's free tier has no search grounding
+# quota (429). gemini = Gemini google_search grounding. DEVIATIONS 13.
+search:
+  backend: claude_cli
+  model: sonnet
+  timeout_s: 240
+

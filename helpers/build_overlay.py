@@ -42,7 +42,7 @@ from helpers.edl import Overlay
 from helpers.screenshot import resolve_aspect
 
 
-def overlay_file(slot_id: str) -> str:
+def overlay_file(slot_id: str, layout: str | None = None) -> str:
     """The EDL `file` for a slot, relative to the EDL itself.
 
     `render.py:resolve_path` resolves a relative overlay path against the
@@ -50,7 +50,7 @@ def overlay_file(slot_id: str) -> str:
     stored here must NOT repeat the `edit/` segment the spec's example shows,
     or the render resolves `<videos_dir>/edit/edit/screenshots/...` and fails.
     """
-    return f"screenshots/{slot_id}/overlay.mp4"
+    return f"screenshots/{slot_id}/overlay.{'mov' if layout in ('float', 'cutout') else 'mp4'}"
 
 
 class GeometryError(ValueError):
@@ -198,6 +198,31 @@ def compute_geometry(image_size: tuple[int, int], aspect_cfg: dict,
                      "background_blur": int(lcfg.get("frame_background_blur", 28)),
                      "background_dim": float(lcfg.get("frame_background_dim", 0.45))})
 
+    elif name in ("float", "cutout"):
+        # A card floating over the LIVE video: no blurred still, no face PiP.
+        # It sits in a band below the face and above the captions, and never
+        # enters the top band Ali keeps for his title text.
+        pad = int(lcfg.get("card_padding_px", 16))
+        mx = int(lcfg.get("margin_x_px", 60))
+        top = round(out_h * max(float(lcfg.get("card_top", 0.45)),
+                                float(inserts.get("top_reserved", 0.0))))
+        bottom = round(out_h * float(lcfg.get("card_bottom", 0.73)))
+        box = Rect(mx, top, out_w - 2 * mx, bottom - top)
+        img_w, img_h, scale = _contain(iw, ih, box.w - 2 * pad, box.h - 2 * pad)
+        # "top": hang from the band's top (Ali: screens at the top, not over my
+        # mouth); default: hug the band's bottom.
+        y = box.y if lcfg.get("card_anchor") == "top" else box.y + box.h - (img_h + 2 * pad)
+        card = Rect(box.x + (box.w - img_w - 2 * pad) // 2, y,
+                    img_w + 2 * pad, img_h + 2 * pad)
+        image = Rect(card.x + pad, card.y + pad, img_w, img_h)
+        geom.update({"card": card, "image": image, "pip": None, "fit": "contain",
+                     "cropped": False, "scale": scale, "box": box,
+                     "card_radius_px": int(lcfg.get("card_radius_px", 24)),
+                     "card_background": lcfg.get("card_background", "#FFFFFF"),
+                     "shadow_px": int(lcfg.get("shadow_px", 24)),
+                     "background": "transparent", "background_solid": "#000000",
+                     "background_blur": 0, "background_dim": 0.0, "pip_radius_px": 0})
+
     elif name == "split":
         gap = int(lcfg.get("gap_px", 16))
         share = float(lcfg.get("screenshot_share", 0.5))
@@ -333,6 +358,29 @@ def _rounded_mask(size: tuple[int, int], radius: int):
     return mask
 
 
+def render_float_frame(screenshot_png: str | Path, out_png: str | Path, geom: dict) -> Path:
+    """Transparent full frame: a white rounded card with a soft shadow, nothing else."""
+    Image, ImageDraw, ImageFilter = _pil()
+    frame, card, image = geom["frame"], geom["card"], geom["image"]
+    r, sh = geom["card_radius_px"], geom["shadow_px"]
+    canvas = Image.new("RGBA", (frame.w, frame.h), (0, 0, 0, 0))
+    shadow = Image.new("RGBA", (frame.w, frame.h), (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).rounded_rectangle(
+        (card.x, card.y + sh // 3, card.x + card.w, card.y + card.h + sh // 3),
+        radius=r, fill=(0, 0, 0, 110))
+    canvas = Image.alpha_composite(canvas, shadow.filter(ImageFilter.GaussianBlur(sh)))
+    ImageDraw.Draw(canvas).rounded_rectangle(
+        (card.x, card.y, card.x + card.w, card.y + card.h), radius=r,
+        fill=_hex_rgb(geom["card_background"]) + (255,))
+    with Image.open(screenshot_png) as shot:
+        shot = shot.convert("RGBA").resize((image.w, image.h), Image.LANCZOS)
+    mask = _rounded_mask((image.w, image.h), max(0, r - 8))
+    canvas.paste(shot, (image.x, image.y), mask)
+    out = Path(out_png)
+    canvas.save(out)
+    return out
+
+
 def render_frame(screenshot_png: str | Path, out_png: str | Path, geom: dict,
                  facecam_still: str | Path | None = None) -> Path:
     """Composite one still overlay frame at the output resolution."""
@@ -406,8 +454,11 @@ def encode_cmd(frame_png: str | Path, out_mp4: str | Path, *, duration_s: float,
                        f":d={fade_out_s:.3f}")
     filters.append("format=yuv420p")
 
-    return ["ffmpeg", "-y", "-loop", "1", "-framerate", str(fps),
-            "-t", f"{duration_s:.3f}", "-i", str(frame_png),
+    # zoompan emits d frames PER INPUT frame, so it gets the still once; a looped
+    # input made a 4.5 s insert encode as minutes of video.
+    src = (["-i", str(frame_png)] if ken_burns and ken_burns > 0 else
+           ["-loop", "1", "-framerate", str(fps), "-t", f"{duration_s:.3f}", "-i", str(frame_png)])
+    return ["ffmpeg", "-y", *src,
             "-vf", ",".join(filters), "-an",
             "-c:v", "libx264", "-preset", "medium", "-crf", "18",
             "-pix_fmt", "yuv420p", "-r", str(fps), str(out_mp4)]
@@ -436,10 +487,27 @@ def build_overlay(screenshot_png: str | Path, out_mp4: str | Path, *,
     out = Path(out_mp4)
     out.parent.mkdir(parents=True, exist_ok=True)
     frame_png = out.with_name("overlay_frame.png")
-    render_frame(screenshot_png, frame_png, geom, facecam_still)
-
     if shutil.which("ffmpeg") is None and runner is subprocess.run:
         raise RuntimeError("ffmpeg is not installed; it is required to encode overlays")
+    if geom["layout"] in ("float", "cutout"):
+        # Alpha survives only in a codec that has it: qtrle in .mov. render.py's
+        # overlay filter honours the alpha plane, so the live video shows through.
+        out = out.with_suffix(".mov")
+        render_float_frame(screenshot_png, frame_png, geom)
+        fi, fo = float(timing.get("fade_in_s", 0.15)), float(timing.get("fade_out_s", 0.15))
+        cmd = ["ffmpeg", "-y", "-loop", "1", "-framerate", str(geom["fps"]),
+               "-t", f"{dur:.3f}", "-i", str(frame_png), "-vf",
+               f"format=rgba,fade=t=in:st=0:d={fi:.3f}:alpha=1,"
+               f"fade=t=out:st={max(0.0, dur - fo):.3f}:d={fo:.3f}:alpha=1",
+               "-an", "-c:v", "qtrle", "-pix_fmt", "argb", "-r", str(geom["fps"]), str(out)]
+        proc = runner(cmd, capture_output=True, text=True)
+        if getattr(proc, "returncode", 1) != 0:
+            raise RuntimeError(f"ffmpeg failed encoding {out}: "
+                               f"{(getattr(proc, 'stderr', '') or '')[-400:]}")
+        return {"file": str(out), "frame": str(frame_png), "duration_s": dur,
+                "geometry": geometry_to_dict(geom), "command": cmd}
+    render_frame(screenshot_png, frame_png, geom, facecam_still)
+
     cmd = encode_cmd(frame_png, out, duration_s=dur, fps=geom["fps"],
                      size=(geom["frame"].w, geom["frame"].h),
                      fade_in_s=float(timing.get("fade_in_s", 0.15)),
@@ -511,6 +579,7 @@ def overlay_for_slot(slot_id: str, meta: dict, *, trigger_time_output: float,
     overlay_meta = {
         "slot_id": slot_id,
         "claim": meta.get("claim", ""),
+        "story": meta.get("story", ""),
         "url": meta.get("url"),
         "source_type": meta.get("source_type", "unknown"),
         "verified": True,
@@ -528,7 +597,7 @@ def overlay_for_slot(slot_id: str, meta: dict, *, trigger_time_output: float,
     if meta.get("source_origin"):
         overlay_meta["source_origin"] = meta["source_origin"]
 
-    return Overlay(file=file or meta.get("overlay") or overlay_file(slot_id),
+    return Overlay(file=file or meta.get("overlay") or overlay_file(slot_id, layout_name),
                    start_in_output=start, duration=dur, meta=overlay_meta)
 
 

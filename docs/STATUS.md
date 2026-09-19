@@ -38,6 +38,74 @@ What is **verified working**:
   `tests/test_screenshot.py` matplotlib tests no longer skip: the suite is now
   367 passed, 0 skipped, from the same 367 tests as 364 passed / 3 skipped.
 
+## Mac setup (2026-09-18, Apple M2, macOS 14)
+
+* `uv` from astral's installer (`~/.local/bin`); Homebrew refuses installs here
+  over outdated Command Line Tools.
+* Homebrew's ffmpeg 9 has no libass/freetype, so no captions and no fixtures.
+  A static build (ffmpeg.martin-riedl.de, arm64) sits in `~/.local/bin`, ahead
+  of `/opt/homebrew/bin` on PATH.
+* `.venv` with `[llm,dev,align,shots,learn,fetch]`: 368 passed, 0 skipped.
+  torch 2.8.0, MPS available.
+* **Alignment models download here.** Both
+  `jonatasgrosman/wav2vec2-large-xlsr-53-arabic` and the torchaudio English
+  bundle loaded and are cached, so item 1 below is a web-container limit only.
+* **First full Stage 1 run.** A 15 s clip from macOS's `Majed` Arabic voice
+  -> `zeta ingest` -> `zeta transcribe`: 22/22 words aligned by
+  `whisperx:jonatasgrosman/...`, QA passed, 19 s wall clock. Timings are
+  monotonic with 40-250 ms gaps, and the Latin `Nvidia` and the digit `30` both
+  aligned. The text has small Gemini slips (`علىكم`, `الديال فلوس`, a stray `لله`).
+  It is still synthetic speech, so this is not a verdict on real Darija.
+* **First real take, end to end** (`IMG_5829.MOV`, 28 s iPhone portrait,
+  2026-09-18). `zeta edit --auto --no-screenshots` produced a 1080x1920,
+  25.6 s `final.mp4` in about 60 s, with 0 self-eval errors. Three bugs found
+  and fixed on the way:
+  1. Gemini wrote Darija in Arabizi. Fixed with a prompt example plus the
+     3.1 model (DEVIATIONS 11).
+  2. The cold-start `cut_ratio: 0.25` rejected a sensible 0.11 edit
+     (DEVIATIONS 12).
+  3. Mixed Darija/Latin captions burned LTR, reading backwards. Fixed with
+     ASS `Encoding -1` plus a leading RLM, guarded by
+     `tests/test_caption_direction.py`.
+
+* **Screenshots, first live run** (scratch claim: Nvidia Q2 FY27 revenue).
+  Claude search picked Nvidia's own newsroom page, shot-scraper captured it, and
+  Gemini vision verified it, giving a readable fit_card with the facecam PiP.
+  Five bugs fixed on the way:
+  * shot-scraper was not found outside an activated venv.
+  * A missing preset selector killed the slot instead of trying the next one.
+  * The retry re-used the selector that had just failed.
+  * The viewport fallback captured the full page (1600x30926), which would
+    have been an unreadable sliver on the card. It is now sized to the card box.
+  * OneTrust's late cookie banner covered the headline.
+  Also: Ken Burns overlays encoded minutes of video for a 4.5 s insert.
+  Still untested live: the X/Twitter and PDF paths.
+
+  Still open on this take: two cuts (`دونك` at 18.0 s, `يعني` at 22.9 s) land
+  with only 80 ms and 20 ms of silence and were flagged for a listen.
+* Noto Sans Arabic and Noto Sans in `~/Library/Fonts`.
+
+## Two real episodes, edited and posted (2026-09-19/20)
+
+* **IMG_5824** (3 min, Hugging Face hack): 13 curated evidence cards, English
+  captions, cut-out layout. Posted.
+* **IMG_5871** (6 min, re-film) as **two parts of 2:59** plus a 43 s outro and a
+  17 s chain-of-thought pick-up clip: 22 cards, 21 approved in one review pass.
+  Posted.
+
+What that run taught, now in the code:
+
+* Gemini's clock runs long on long audio (377 s of segments for a 359 s take)
+  and collapses retakes; 60 s chunks plus a drift rescale fixed both.
+* QA repairs iterate up to 3 rounds and are reverted when they make a window
+  worse; a long gap over loud audio is flagged as a squeeze.
+* Cuts land at any word boundary (`cuts.min_gap_ms: 20` in the profile): a
+  150 ms floor refused every cut in Ali's fast speech.
+* Screens are evidence: the passage in the source that proves what he says,
+  highlighted, not a headline. `zeta proof` shows the layout in seconds.
+* Speed: reused cut segments, Apple-GPU alignment, parallel capture, parallel
+  parts. A revision is ~2-3 min instead of ~10.
+
 ## What has never run on real material
 
 This is the honest list. Everything here is written and unit-tested; none of it
@@ -105,10 +173,13 @@ has met Ali's footage.
 5. **The Stage 1 benchmark.** Never run. `configs/transcribe.yaml` names
    `gemini_flash_lite` as default because the spec recommends it, not because it
    won anything. Needs 3 clips with human-corrected verbatim transcripts.
-6. **Learn mode on real pairs.** Scene detection and the face-presence check
-   cannot be rehearsed on the synthetic fixtures - they have no face.
-7. **Screenshots.** shot-scraper's multi-YAML keys, the cookie-dismissal JS and
-   the vision verification have never hit a live page.
+6. **Learn mode on raw/published PAIRS.** Published-only has run (Ali's gap-year
+   reel -> `style_profile.json`: pacing, insert rate, cut-out layout). No raw
+   take has been paired with its published version yet, so the cut ratio is
+   still unknown and a cold start only removes fillers and repeats.
+7. **Screenshots.** Search, HTML capture, verification and overlay have now run
+   live on one owner page (see above). The planner's own claims on a real take
+   have not yet produced a shippable slot, because they were too vague to source.
 8. **`zeta fetch`.** Instagram and TikTok are blocked by the build environment's
    network policy; only the argv construction and the CSV rows are tested.
 

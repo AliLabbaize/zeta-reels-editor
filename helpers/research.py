@@ -20,8 +20,11 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import os
 import re
+import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -263,6 +266,12 @@ def classify_source(url: str, claim: Claim, cfg: dict) -> str:
     for d in owner.get("domains", []) or []:
         if _host_matches(host, d):
             return "owner"
+    # Any listed company's own site is first-hand, whatever the planner typed as
+    # the entity: it wrote "AI agents" and openai.com's incident post, and
+    # Hugging Face's own timeline, were thrown out as unlisted.
+    for entry in (cfg.get("owners") or {}).values():
+        if any(_host_matches(host, d) for d in (entry or {}).get("domains", []) or []):
+            return "owner"
     if any(_host_matches(host, h) for h in OFFICIAL_FILING_HOSTS) or host.endswith(".gov"):
         return "official_filing"
     for d in cfg.get("reputable_press", []) or []:
@@ -414,9 +423,35 @@ def _links_for_claim(claim: Claim, cfg: dict) -> list[str]:
     return out
 
 
+def _claude_search(prompt: str, scfg: dict) -> dict:
+    """Web search through headless Claude Code, which bills Ali's subscription.
+
+    Run from a temp dir with no setting sources so neither this repo's session
+    hook nor any user plugin loads into a search call.
+    """
+    cmd = ["claude", "-p", prompt, "--output-format", "json",
+           "--model", str(scfg.get("model") or "sonnet"),
+           "--system-prompt", _SEARCH_SYSTEM, "--json-schema", json.dumps(SEARCH_SCHEMA),
+           "--tools", "WebSearch", "--allowedTools", "WebSearch",
+           "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"]
+    try:
+        run = subprocess.run(cmd, capture_output=True, text=True, cwd=tempfile.gettempdir(),
+                             timeout=float(scfg.get("timeout_s") or 240))
+    except FileNotFoundError as exc:
+        raise RuntimeError("the `claude` CLI is not on PATH; install Claude Code or "
+                           "set search.backend: gemini in configs/sources.yaml") from exc
+    try:
+        out = json.loads(run.stdout)
+    except json.JSONDecodeError:
+        raise RuntimeError(f"claude -p exited {run.returncode}: "
+                           f"{(run.stderr or run.stdout).strip()[:300]}") from None
+    if out.get("is_error") or not isinstance(out.get("structured_output"), dict):
+        raise RuntimeError(f"claude -p failed: {str(out.get('result'))[:300]}")
+    return out["structured_output"]
+
+
 def _search_candidates(claim: Claim, cfg: dict, llm: LLM | None) -> list[Candidate]:
     """Grounded search -> classified candidates. Never raises; logs instead."""
-    llm = llm or LLM()
     prompt = (
         f"Claim to prove on screen: {claim.claim}\n"
         f"Entity: {claim.entity or 'unknown'}\n"
@@ -425,11 +460,17 @@ def _search_candidates(claim: Claim, cfg: dict, llm: LLM | None) -> list[Candida
         + (f"Quote that must appear: {claim.quote}\n" if claim.quote else "")
         + (f"Date: {claim.date}\n" if claim.date else "")
         + f"Search query to start from: {claim.search_query()}\n"
-        "Return the pages where this claim is published verbatim."
+        "Return the pages that best SHOW this on screen: the article itself, the "
+        "official page or post, or the product page. Prefer the original over coverage."
     )
+    scfg = cfg.get("search") or {}
     try:
-        out = llm.generate(prompt, system=_SEARCH_SYSTEM, schema=SEARCH_SCHEMA,
-                           tools=("google_search",))
+        # Mock mode stays on the Gemini mock: tests never hit the network.
+        if scfg.get("backend") == "claude_cli" and not os.environ.get("ZETA_LLM_MOCK"):
+            out = _claude_search(prompt, scfg)
+        else:
+            out = (llm or LLM()).generate(prompt, system=_SEARCH_SYSTEM, schema=SEARCH_SCHEMA,
+                                          tools=("google_search",))
     except Exception as exc:  # a dead search must flag the slot, not kill the run
         bad = Candidate(source_type="unresolved", origin="search",
                         rejected_reason=f"search unavailable: {exc}")
@@ -488,9 +529,14 @@ class Slot:
 
 
 def build_slots(claims: Sequence[Claim], cfg: dict, llm: LLM | None = None) -> list[Slot]:
+    from concurrent.futures import ThreadPoolExecutor
+
+    # Each search is a ~20 s subprocess; one after another made research the
+    # slowest stage of a 3 min edit.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        cands = list(pool.map(lambda c: resolve_source(c, cfg, llm), claims))
     slots: list[Slot] = []
-    for claim in claims:
-        cand = resolve_source(claim, cfg, llm)
+    for claim, cand in zip(claims, cands):
         slot = Slot(claim=claim, candidate=cand,
                     selectors=selector_preset(cand.url, claim, cfg))
         if not cand.usable:

@@ -45,8 +45,34 @@ aspects:
     capture: {width: 1600, retina: true}
 
 inserts:
-  default_layout: fit_card       # fit_card | split | fullframe_pip
+  default_layout: cutout         # cutout | float | fit_card | split | fullframe_pip
+  # Kept clear for the whole video: Ali puts his title text up here.
+  top_reserved: 0.12             # of frame height: Ali's title line
   layouts:
+    cutout:
+      # Learned from Ali's published reels: the bare screenshot, no card, no
+      # shadow, square corners, over his chest below the face. Captions sit
+      # just below the band.
+      # At the TOP (Ali, 2026-09-19: "screens at the top instead of hiding my
+      # mouth"), just under the title line he adds in the app (top ~12%).
+      card_anchor: top
+      card_top: 0.13
+      card_bottom: 0.46
+      margin_x_px: 80
+      card_padding_px: 0
+      card_radius_px: 0
+      shadow_px: 0
+      card_background: "#FFFFFF"
+    float:
+      # The screenshot floats over the live video on a white card: no blur, no
+      # face box. The band sits below the face and above the captions.
+      card_top: 0.45               # of frame height: below the face (860 px on a Reel)
+      card_bottom: 0.73            # above the captions (1400 px on a Reel)
+      margin_x_px: 60
+      card_padding_px: 16
+      card_radius_px: 24
+      shadow_px: 24
+      card_background: "#FFFFFF"
     fit_card:
       # Screenshot scaled to FIT the safe box (contain, no crop), rounded card
       # on a blurred, darkened still of the facecam. Facecam stays visible as a
