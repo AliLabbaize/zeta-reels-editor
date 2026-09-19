@@ -153,7 +153,7 @@ def test_gemini_flash_lite_chunks_calls_and_stitches(tmp_path):
     assert len(seen) == 3, "one call per chunk window"
     assert doc.text() == STITCHED
     assert doc.backend == "gemini_flash_lite"
-    assert doc.meta["model"] == "gemini-3.5-flash-lite"
+    assert doc.meta["model"] == "gemini-3.1-flash-lite"
 
 
 def test_no_model_timestamp_reaches_a_word(tmp_path):
@@ -714,3 +714,21 @@ def test_segment_windows_never_claim_the_same_audio(tmp_path, fake_whisperx):
     windows = fake_whisperx.calls[0]["segments"]
     assert windows[0]["end"] <= windows[1]["start"] + 1e-9
     assert doc.overlaps() == []
+
+
+def test_speech_in_a_word_gap_is_transcribed_and_spliced_in(tmp_path):
+    # A retake the first pass collapsed sits in a gap as untranscribed speech.
+    from helpers.words import Word, WordsDoc
+    wav = make_wav(tmp_path / "raw01.wav", 10.0)
+    doc = WordsDoc(words=[Word(word="واحد", start=1.0, end=1.4), Word(word="جوج", start=4.0, end=4.4)])
+    doc.meta["silences"] = [[0.0, 0.9]]                 # the gap 1.4-4.0 is loud
+    gemini_client.register_mock(lambda req: "واحد تاني")
+    spans = tg.fill_loud_gaps(doc, wav, LLM(model="test"), work_dir=tmp_path / "g")
+    assert spans == [(1, 3)]
+    assert [w.word for w in doc.words] == ["واحد", "واحد", "تاني", "جوج"]
+    assert not doc.words[1].timed                       # timing is the aligner's job
+    doc.meta["silences"] = [[1.4, 4.0]]                 # a real pause: left alone
+    assert tg.fill_loud_gaps(WordsDoc(words=[Word(word="a", start=1.0, end=1.4),
+                                             Word(word="b", start=4.0, end=4.4)],
+                                      meta={"silences": [[1.4, 4.0]]}),
+                             wav, LLM(model="test"), work_dir=tmp_path / "g") == []

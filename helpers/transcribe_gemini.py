@@ -125,8 +125,10 @@ SYSTEM_PROMPT = """You are a VERBATIM transcriber for Zeta, a Moroccan news chan
 The speaker talks Moroccan Darija and code-switches into French and English.
 
 Transcribe exactly what is said:
-- Darija and Arabic: Arabic script.
+- Darija and Arabic: Arabic script. Never Arabizi: not "l9aw", "m3a", "3la".
 - French and English words: Latin script, spelled normally (Nvidia, startup, marché).
+- Example of the required mix: "واحد الشركة سميتها Nvidia ربحات بزاف ديال الفلوس، donc
+  الأرباح ديالها طلعو". The rule alone is ignored on real speech; the example is not.
 - Keep every filler, hesitation, repetition, stutter and false start. They are the
   editorial signal this pipeline exists to find. Never clean up, never summarise,
   never translate, never reorder.
@@ -912,3 +914,54 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+GAP_PROMPT = """This is a short cut of a Moroccan news video, taken from between two
+words the transcript already has. Transcribe ONLY what is spoken in it, VERBATIM:
+Darija in Arabic script, French and English in Latin, every repetition, false
+start and filler kept. If nothing is spoken, return an empty text."""
+
+
+def fill_loud_gaps(doc: WordsDoc, wav: str | Path, llm, *, min_gap_s: float = 0.7,
+                   work_dir: str | Path | None = None) -> list[tuple[int, int]]:
+    """Transcribe speech the first pass left out, and splice it into the words.
+
+    Gemini collapses retakes: on a 6 min take, "the agents don't want to kill
+    humanity..." was said twice and written once, so the second take sat in a
+    word gap as untranscribed speech. Nobody could cut it, and alignment
+    squeezed the words around it. Every gap the audio says is mostly speech is
+    transcribed on its own; the new words go in untimed (hard rule 8: verbatim),
+    and the returned spans are for the caller to align.
+    """
+    sil = doc.meta.get("silences")
+    if sil is None:
+        return []
+    wav = Path(wav)
+    work = Path(work_dir or wav.parent / "gaps")
+    inserts: list[tuple[int, list[str]]] = []
+    timed = [i for i, w in enumerate(doc.words) if w.timed]
+    for i, j in zip(timed, timed[1:]):
+        a, b = doc.words[i].end, doc.words[j].start
+        if b - a < min_gap_s:
+            continue
+        quiet = sum(max(0.0, min(b, e) - max(a, s0)) for s0, e in sil)
+        if quiet > 0.6 * (b - a):
+            continue
+        part = slice_wav(wav, a, b, work / f"gap_{a:08.2f}.wav")
+        try:
+            text = str(llm.generate(GAP_PROMPT, files=[part], temperature=0.0) or "")
+        except Exception:
+            continue
+        tokens = [t for t in text.replace("\n", " ").split() if t.strip()]
+        if tokens:
+            inserts.append((j, tokens))
+    spans: list[tuple[int, int]] = []
+    shift = 0
+    for j, tokens in inserts:
+        at = j + shift
+        doc.words[at:at] = [Word(word=t, src="gap") for t in tokens]
+        spans.append((at, at + len(tokens)))
+        shift += len(tokens)
+    if spans:
+        doc.meta["gap_fills"] = [list(s) for s in spans]
+    return spans

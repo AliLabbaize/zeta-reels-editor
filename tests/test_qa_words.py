@@ -163,3 +163,30 @@ def test_main_exits_zero_on_a_clean_transcript(tmp_path):
                           "--videos-dir", str(tmp_path)])
     assert code == 0
     assert (paths.transcripts / "raw01.qa.json").exists()
+
+
+def test_a_run_of_low_scores_is_flagged_but_a_lone_one_is_not():
+    doc = clean_doc()
+    doc.words[5].score = 0.01                      # a short function word: fine
+    for i in (20, 21, 22):                         # a window the aligner lost
+        doc.words[i].score = 0.0
+    assert qa_words.flagged_indices(doc, CFG) == [20, 21, 22]
+
+
+def test_a_passing_take_with_flagged_words_is_still_repaired(tmp_path):
+    doc = clean_doc()
+    doc.words[10].start = doc.words[10].end = None  # 97.5% coverage: passes
+    calls = []
+    qa_words.qa(doc, tmp_path / "x.wav", CFG, realign=lambda *a, **k: calls.append(a) or 1)
+    assert calls, "a flagged word in a passing take must still get its repair pass"
+
+
+def test_a_long_gap_over_loud_audio_is_flagged_but_a_real_pause_is_not():
+    doc = clean_doc()
+    for w in doc.words[11:]:                 # open a 3 s gap after word 10
+        w.start += 3.0
+        w.end += 3.0
+    doc.meta["silences"] = []                # the audio says: talking throughout
+    assert {10, 11} <= set(qa_words.flagged_indices(doc, CFG))
+    doc.meta["silences"] = [[doc.words[10].end, doc.words[11].start]]
+    assert qa_words.flagged_indices(doc, CFG) == []

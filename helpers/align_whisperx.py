@@ -271,6 +271,14 @@ def _segment_plan(doc: WordsDoc, duration: float, pad: float
     if not raw:
         return [(0, len(doc.words), 0.0, duration)]
 
+    # The transcriber's clock can run long: a 359.6 s take came back with
+    # segments up to 377.5 s, so its last minute had no audio to align to and
+    # 63 words went untimed. Drift like that is proportional, so rescale.
+    last = max(e for _a, _b, _s, e in raw)
+    if last > duration * 1.01:
+        k = duration / last
+        raw = [(a, b, s * k, e * k) for a, b, s, e in raw]
+
     # Padding must not let two windows claim the same audio: both would place a
     # word there and the result is an overlap QA then has to repair. Each side
     # of a gap gets at most half of it.
@@ -285,6 +293,75 @@ def _segment_plan(doc: WordsDoc, duration: float, pad: float
             lo, hi = s, max(e, s + 1e-3)
         out.append((a, b, lo, hi))
     return out
+
+
+def measure_silences(audio: Any, *, sr: int = SAMPLE_RATE, frame_s: float = 0.02,
+                     min_s: float = 0.25) -> list[list[float]]:
+    """`[start, end]` runs of silence, from the waveform, in seconds.
+
+    Threshold is relative to the take (a third of the way from its noise floor
+    to its speech level), because a room tone of 45 dB is silence in one take
+    and speech in a quiet one.
+    """
+    import numpy as np  # lazy: stdlib-only import rule
+
+    x = np.asarray(audio, dtype=np.float32)
+    hop = max(1, int(frame_s * sr))
+    n = len(x) // hop
+    if n == 0:
+        return []
+    db = 20 * np.log10(np.sqrt((x[:n * hop].reshape(n, hop) ** 2).mean(axis=1)) + 1e-9)
+    floor, speech = np.percentile(db, 10), np.percentile(db, 90)
+    quiet = db < floor + (speech - floor) / 3.0
+    out: list[list[float]] = []
+    i = 0
+    while i < n:
+        if quiet[i]:
+            j = i
+            while j < n and quiet[j]:
+                j += 1
+            if (j - i) * frame_s >= min_s:
+                out.append([round(i * frame_s, 3), round(j * frame_s, 3)])
+            i = j
+        else:
+            i += 1
+    return out
+
+
+def snap_boundaries(plan: list[tuple[int, int, float, float]], audio: Any,
+                    search_s: float, *, sr: int = SAMPLE_RATE, frame_s: float = 0.02
+                    ) -> list[tuple[int, int, float, float]]:
+    """Move each window boundary to the quietest frame within `search_s` of it.
+
+    The windows come from the transcriber's segment times. Where two segments
+    touch, the boundary is the model's timestamp to the millisecond, and on a
+    real 3 min take ten phrase-initial words were pinned to whole seconds with
+    scores near 0: speech the window had cut off. Splitting in the actual
+    silence keeps hard rule 12 (no model timestamp survives) true for windows too.
+    """
+    if len(plan) < 2 or search_s <= 0:
+        return plan
+    import numpy as np  # lazy: stdlib-only import rule
+
+    x = np.asarray(audio, dtype=np.float32)
+    hop = max(1, int(frame_s * sr))
+    n = len(x) // hop
+    if n == 0:
+        return plan
+    rms = np.sqrt((x[:n * hop].reshape(n, hop) ** 2).mean(axis=1))
+    out = [list(p) for p in plan]
+    for k in range(len(out) - 1):
+        left, right = out[k], out[k + 1]
+        mid = (left[3] + right[2]) / 2.0
+        # Stay clear of each window's own start/end so neither becomes empty.
+        lo = max(mid - search_s, left[2] + frame_s * 5)
+        hi = min(mid + search_s, right[3] - frame_s * 5)
+        f0, f1 = int(lo / frame_s), min(n, int(hi / frame_s))
+        if f1 <= f0:
+            continue
+        t = (f0 + int(np.argmin(rms[f0:f1])) + 0.5) * frame_s
+        left[3] = right[2] = t
+    return [tuple(p) for p in out]
 
 
 def latin_runs(words: Sequence[Word], start: int = 0) -> list[tuple[int, int]]:
@@ -323,7 +400,12 @@ def bound_run(words: Sequence[Word], i: int, j: int, *,
 
 
 def resolve_device(cfg: dict | None = None) -> str:
-    """`auto` -> cuda when torch sees a GPU, else cpu. Alignment is fine on CPU."""
+    """`auto` -> cuda, else Apple's GPU (mps), else cpu.
+
+    Measured on Ali's M2 with the 43 s outro: cpu 45.3 s, mps 15.4 s, and the
+    word times came back identical to the millisecond (max diff 0.000 s), so
+    the only thing traded is wall clock.
+    """
     want = str(cfgmod.get(cfg or {}, "alignment.device", "auto") or "auto").lower()
     if want != "auto":
         return want
@@ -331,7 +413,10 @@ def resolve_device(cfg: dict | None = None) -> str:
         import torch
     except ImportError:
         return "cpu"
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        return "cuda"
+    return "mps" if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available() \
+        else "cpu"
 
 
 def _whisperx():
@@ -400,7 +485,8 @@ def align(
     duration = len(audio) / float(SAMPLE_RATE)
     pad = float(acfg.get("segment_pad_s", 0.5))
 
-    plan = _segment_plan(doc, duration, pad)
+    plan = snap_boundaries(_segment_plan(doc, duration, pad), audio,
+                           float(acfg.get("boundary_search_s", 1.5)))
     payload: list[dict] = []
     token_spans: list[list[tuple[int, int]]] = []
     for a, b, t0, t1 in plan:
@@ -419,6 +505,7 @@ def align(
     if acfg.get("align_latin_spans", True):
         align_latin_spans(doc, audio, cfg, device=device, duration=duration)
 
+    doc.meta["silences"] = measure_silences(audio)
     doc.aligner = f"whisperx:{model_name}"
     doc.meta["alignment"] = {
         "device": device,
@@ -479,8 +566,11 @@ def realign_window(doc: WordsDoc, wav: str | Path, i: int, j: int,
         audio = load_audio(wav)
     duration = len(audio) / float(SAMPLE_RATE)
 
+    # The audio stops at the untouched neighbours. Context padding is already in
+    # the words (qa_words.expand_window); padding the audio as well handed the
+    # model speech that is not in its text, and on a real take it put the
+    # window's first word 2.0 s back, on top of its neighbour. `pad_s` is unused.
     lo, hi = bound_run(doc.words, i, j, lo=0.0, hi=duration)
-    lo, hi = max(0.0, lo - pad_s), min(duration, hi + pad_s)
     if hi - lo < 0.05:
         return 0
 

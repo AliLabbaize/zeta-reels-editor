@@ -18,10 +18,14 @@ second_opinion:
 
 backends:
   gemini_flash_lite:
-    model: gemini-3.5-flash-lite
-    fallback_model: gemini-3.1-flash-lite
+    # 3.1 first: on real Darija 3.5 answers in Arabizi (l9aw, m3a) whatever the
+    # prompt says, and Arabizi cannot be aligned by the Arabic model. DEVIATIONS 11.
+    model: gemini-3.1-flash-lite
+    fallback_model: gemini-3.5-flash-lite
     # VERBATIM. Never SMART: filler removal destroys the editorial signal (hard rule 8).
-    chunk_s: 600
+    # 60 s, not 600: on a 6 min take long chunks made the model's clock run 5%
+    # long and collapse repeated takes, which threw the alignment off by seconds.
+    chunk_s: 60
     chunk_overlap_s: 2.0
     temperature: 0.0
   gemini_transcribe:
@@ -39,7 +43,10 @@ alignment:
   model: jonatasgrosman/wav2vec2-large-xlsr-53-arabic
   english_model: WAV2VEC2_ASR_BASE_960H
   interpolate_method: ignore
-  device: auto                       # auto | cpu | cuda
+  boundary_search_s: 1.5             # windows split at the quietest frame near each
+                                     # transcriber boundary, never at its timestamp
+  device: auto                       # auto | cpu | cuda | mps (Apple GPU: 3x faster,
+                                     # identical timings — see resolve_device)
   batch_size: 8
   # Latin/English spans are aligned with the English model and bounded by the
   # timestamps of the neighbouring Arabic words.
@@ -51,6 +58,10 @@ qa:
   allow_overlaps: false
   realign_flagged_windows: true      # one automatic re-align pass on failing windows
   window_pad_s: 2.0
+  fill_loud_gaps: false              # transcribe speech in word gaps; off: it cannot
+                                     # tell a collapsed retake from a timing error
+  low_score: 0.05                    # a run of low_score_run words below this is
+  low_score_run: 3                   # re-aligned like an untimed one
 
 # Custom vocabulary: biases gemini_transcribe and seeds the alignment alias map.
 # Max 1000 terms. Names, tickers, French/English terms that Darija ASR mangles.

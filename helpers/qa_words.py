@@ -55,6 +55,8 @@ def thresholds(cfg: dict | None = None) -> dict:
         "allow_overlaps": bool(qa.get("allow_overlaps", False)),
         "realign_flagged_windows": bool(qa.get("realign_flagged_windows", True)),
         "window_pad_s": float(qa.get("window_pad_s", 2.0)),
+        "low_score": float(qa.get("low_score", 0.05)),
+        "low_score_run": int(qa.get("low_score_run", 3)),
     }
 
 
@@ -117,6 +119,28 @@ def flagged_indices(doc: WordsDoc, cfg: dict | None = None) -> list[int]:
     for a, b in doc.overlaps():
         flagged.update((a, b))
     flagged.update(doc.long_words(th["max_word_duration_s"]))
+    # A long gap between words over LOUD audio is speech the aligner squeezed
+    # into the words before it (3 min take: 20 words packed into 2.4-7.3 s,
+    # then 4 s of "silence" that was talking). Re-align around it.
+    sil = doc.meta.get("silences")
+    if sil is not None:
+        timed_idx = [i for i, w in enumerate(doc.words) if w.timed]
+        for i, j in zip(timed_idx, timed_idx[1:]):
+            a, b = doc.words[i].end, doc.words[j].start
+            if b - a > 1.0:
+                quiet = sum(max(0.0, min(b, e) - max(a, s)) for s, e in sil)
+                if quiet < 0.5 * (b - a):
+                    flagged.update((i, j))
+    # One low score is a short function word; a run of them is a window the
+    # aligner lost (on a real take: 8 words squeezed after a drifted boundary).
+    run: list[int] = []
+    for i, w in enumerate(doc.words + [None]):
+        if w is not None and w.timed and w.score is not None and w.score < th["low_score"]:
+            run.append(i)
+            continue
+        if len(run) >= th["low_score_run"]:
+            flagged.update(run)
+        run = []
     return sorted(flagged)
 
 
@@ -167,6 +191,16 @@ def repair_windows(doc: WordsDoc, indices: Sequence[int],
 RealignFn = Callable[..., int]
 
 
+def _window_defects(doc: WordsDoc, lo: int, hi: int, th: dict) -> int:
+    """Hard failures inside [lo, hi): untimed, over-long and overlapping words."""
+    ws = doc.words[lo:hi]
+    n = sum(1 for w in ws if not w.timed)
+    n += sum(1 for w in ws if w.timed and w.end - w.start > th["max_word_duration_s"])
+    timed = [w for w in ws if w.timed]
+    n += sum(1 for a, b in zip(timed, timed[1:]) if b.start < a.end - 1e-6)
+    return n
+
+
 def qa(
     doc: WordsDoc,
     wav: str | Path | None = None,
@@ -183,24 +217,45 @@ def qa(
     report["realigned_windows"] = []
 
     th = thresholds(cfg)
-    can_repair = bool(wav) and th["realign_flagged_windows"] and not report["ok"]
+    # Repair whatever is flagged, not only takes that fail: 98.8% coverage passes
+    # the gate while its 7 untimed words still lose their captions and cut edges.
+    can_repair = bool(wav) and th["realign_flagged_windows"] and bool(flagged_indices(doc, cfg))
     if can_repair:
         fn = realign or align_whisperx.realign_window
-        windows = repair_windows(doc, flagged_indices(doc, cfg), cfg)
         repaired: list[dict] = []
-        for lo, hi in windows:
-            try:
-                timed = fn(doc, wav, lo, hi, cfg, pad_s=th["window_pad_s"])
-                err = None
-            except Exception as exc:  # a failed repair is a QA finding, not a crash
-                timed, err = 0, f"{type(exc).__name__}: {exc}"
-            entry = {"start_index": lo, "end_index": hi, "words_timed": timed}
-            if err:
-                entry["error"] = err
-            repaired.append(entry)
+        passes = 1
+        # Each repair fixes the neighbours the next one is bounded by, so a
+        # squeeze can move along the take (3 min take: fixed at 7 s, reappeared
+        # at 10 s). Up to 3 rounds; stop when nothing new is flagged.
+        seen: set[tuple[int, int]] = set()
+        for _round in range(3):
+            windows = [w for w in repair_windows(doc, flagged_indices(doc, cfg), cfg)
+                       if w not in seen]
+            if not windows:
+                break
+            passes += 1
+            for lo, hi in windows:
+                seen.add((lo, hi))
+                before_w = [(w.start, w.end, w.score) for w in doc.words[lo:hi]]
+                bad_before = _window_defects(doc, lo, hi, th)
+                try:
+                    timed = fn(doc, wav, lo, hi, cfg, pad_s=th["window_pad_s"])
+                    err = None
+                except Exception as exc:  # a failed repair is a QA finding, not a crash
+                    timed, err = 0, f"{type(exc).__name__}: {exc}"
+                # A repair must not make things worse: on a clean outro one
+                # stretched a word to 2.1 s and failed a take that had passed.
+                if _window_defects(doc, lo, hi, th) > bad_before:
+                    for w, (a, b, sc) in zip(doc.words[lo:hi], before_w):
+                        w.start, w.end, w.score = a, b, sc
+                    err = (err or "") + "reverted: the repair made the window worse"
+                entry = {"start_index": lo, "end_index": hi, "words_timed": timed}
+                if err:
+                    entry["error"] = err
+                repaired.append(entry)
         before = report
         report = check(doc, cfg)
-        report["passes"] = 2
+        report["passes"] = passes
         report["realigned_windows"] = repaired
         report["before_repair"] = {
             "coverage": before["coverage"],
