@@ -63,23 +63,37 @@ WhisperX alignment runs on CPU; a GPU only makes it faster.
 ### On macOS
 
 ```bash
-brew install ffmpeg python@3.11
+brew install python@3.11
 brew install --cask font-noto-sans-arabic    # the caption font
 brew install uv                              # optional; python3.11 -m venv works
 ```
 
-Homebrew's ffmpeg carries libass, fribidi and harfbuzz, so the stock formula is
-enough. Two platform differences worth knowing before the first render:
+**ffmpeg needs libass, and Homebrew's no longer has it.** Since ffmpeg 7.1 the
+formula ships without libass or freetype, so captions cannot burn and even the
+test fixtures fail to build. Use a full static build instead, ahead of
+`/opt/homebrew/bin` on PATH:
 
-* **Alignment runs on CPU, including on Apple Silicon.** `alignment.device:
-  auto` resolves to `cuda` or `cpu` and never to `mps`, because wav2vec2 under
-  MPS is not reliable enough to be the timing authority. Expect a long take to
-  align in minutes rather than seconds; correctness is unaffected. Forcing
-  `device: mps` in `configs/transcribe.yaml` is not a supported configuration.
+```bash
+curl -L https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip -o f.zip
+curl -L https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip -o p.zip
+unzip -o f.zip -d ~/.local/bin && unzip -o p.zip -d ~/.local/bin
+```
+
+`scripts/session_start.sh` checks this and says so when the ffmpeg on PATH
+cannot burn subtitles. Two more platform notes:
+
+* **Alignment uses Apple's GPU.** `alignment.device: auto` resolves to `cuda`,
+  then `mps`, then `cpu`. Measured on an M2 (43 s clip): cpu 45.3 s, mps 15.4 s,
+  word times identical to the millisecond. Set `device: cpu` to opt out.
 * **There is no fontconfig.** libass resolves fonts through CoreText, so the
   installed-font check reads `~/Library/Fonts` and `/Library/Fonts` instead of
   `fc-list`. Install the font into one of those - `brew install --cask` does -
   or the check cannot see it.
+* **Source search runs through the Claude Code CLI** (`claude -p`), on your own
+  Claude subscription: the Gemini free tier has no search-grounding quota.
+  Install Claude Code and log in, or set `search.backend: gemini` in
+  `configs/sources.yaml`. Gemini still does transcription, translation and the
+  screenshot verification.
 
 A cloud session cannot do alignment at all if `huggingface.co` is outside its
 egress policy: whisperx downloads the wav2vec2 weights on first use, and the
@@ -94,7 +108,15 @@ zeta learn --pairs pairs.csv --out style_profile.json
 zeta edit raw01.mp4 --profile style_profile.json --links links.txt --aspect 9:16
 zeta edit raw01.mp4 --auto                  # unattended; the report is the review
 zeta review edit/edl.json                   # open the decision report
+zeta edit raw01.mp4 --auto --review-shots   # approve every screenshot first, in the browser
+zeta proof -v <videos_dir> --open           # still frames of every insert, in seconds
 ```
+
+Iterating is meant to be cheap: `zeta proof` shows the real frame, the real
+card and the real burned captions at every insert without rendering, `zeta
+render` reuses the cut segments when only cards or captions changed, and
+`--no-self-eval` skips the post-render vision pass. See "Iterate fast" in
+`.claude/skills/zeta-editor/SKILL.md`.
 
 `fetch` downloads a published video for learn mode. A published-only row teaches
 insert density, layout and triggers, but not the cut ratio or the filler policy:
