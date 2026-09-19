@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 
+import sys
+
 import pytest
 
 from helpers import gemini_client, learn_style
@@ -210,7 +212,9 @@ def test_extract_trigger_priority_order():
     assert extract_trigger(mk(["just", "words", "here"])) is None
 
 
-def test_scene_detection_names_the_extra_it_needs(tmp_path):
+def test_scene_detection_names_the_extra_it_needs(tmp_path, monkeypatch):
+    # A None entry makes the import fail, so this holds with [learn] installed too.
+    monkeypatch.setitem(sys.modules, "scenedetect", None)
     with pytest.raises(MissingExtra) as exc:
         detect_inserts(tmp_path / "pub.mp4", "ep01", tmp_path / "frames")
 
@@ -377,7 +381,9 @@ def test_published_only_pair_still_yields_a_profile(monkeypatch, tmp_path):
     profile = learn([Pair(published=tmp_path / "pub01.mp4")],
                     tmp_path / "style_profile.json", visuals=False)
 
-    assert profile["meta"]["cuts_observed"] == 0 and profile["cut_ratio"] == 0.0
+    # No raw take: the cut ratio is unknown, not zero (None keeps a new edit to
+    # fillers and repeats).
+    assert profile["meta"]["cuts_observed"] == 0 and profile["cut_ratio"] is None
     assert profile["median_kept_gap_ms"] > 0      # pacing still comes through
     assert "could not be extracted" in (tmp_path / "few_shot_examples.md").read_text(
         encoding="utf-8")

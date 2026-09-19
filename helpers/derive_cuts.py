@@ -39,15 +39,19 @@ from .diff_align import Span
 from .words import WordsDoc
 
 # Hard rule 7: every edge is padded, and the pad is bounded on both sides.
-PAD_BEFORE_MS = 50.0
-PAD_AFTER_MS = 80.0
+# wav2vec2 CTC onsets land late: on a real take the first phoneme sat ~60-100 ms
+# before the aligned start, so a 50 ms pre-pad clipped it (heard as a pop).
+PAD_BEFORE_MS = 140.0
+PAD_AFTER_MS = 100.0
 PAD_MIN_MS = 30.0
 PAD_MAX_MS = 200.0
 
 # Silence classes at a cut point (spec, stage 4 mechanics).
 SAFE_GAP_MS = 400.0     # cut here without asking
 CHECK_GAP_MS = 150.0    # cut here, but the caller should eyeball it first
-MERGE_GAP_MS = 120.0    # two kept ranges closer than this are really one range
+MERGE_GAP_MS = 120.0
+MAX_PAUSE_MS = 500.0
+MIN_PAUSE_SCORE = 0.3   # both words around a pause cut must be confidently timed    # cold start; longer silence inside kept speech is cut    # two kept ranges closer than this are really one range
 
 # How far a boundary may travel to find silence. A cut point that has to move a
 # second and a half is not the same edit any more, so we stop and flag instead.
@@ -229,10 +233,10 @@ def _gap_ms_before(doc: WordsDoc, index: int, floor: float) -> float:
 _GAP_EPS_MS = 1e-3
 
 
-def _gap_class(gap_ms: float) -> str:
+def _gap_class(gap_ms: float, check_ms: float = CHECK_GAP_MS) -> str:
     if gap_ms >= SAFE_GAP_MS - _GAP_EPS_MS:
         return "safe"
-    if gap_ms >= CHECK_GAP_MS - _GAP_EPS_MS:
+    if gap_ms >= check_ms - _GAP_EPS_MS:
         return "check"
     return "unsafe"
 
@@ -249,7 +253,7 @@ def _boundary_time(doc: WordsDoc, index: int, floor: float, ceil: float) -> floa
 # -------- boundary safety ----------------------------------------------------
 
 
-def _safe_boundary(doc: WordsDoc, index: int, *, lo: int, hi: int,
+def _safe_boundary(doc: WordsDoc, index: int, *, lo: int, hi: int, check_ms: float = CHECK_GAP_MS,
                    floor: float, ceil: float) -> tuple[int, float, str, list[str]]:
     """Move a cut boundary to the nearest word boundary that sits in silence.
 
@@ -266,8 +270,8 @@ def _safe_boundary(doc: WordsDoc, index: int, *, lo: int, hi: int,
     if index <= 0 or index >= len(doc.words):
         # The head and the tail of the take are silence by construction.
         return index, gap, "safe", notes
-    if _gap_class(gap) != "unsafe":
-        return index, gap, _gap_class(gap), notes
+    if _gap_class(gap, check_ms) != "unsafe":
+        return index, gap, _gap_class(gap, check_ms), notes
 
     origin = _boundary_time(doc, index, floor, ceil)
     best_rank: tuple | None = None
@@ -276,7 +280,7 @@ def _safe_boundary(doc: WordsDoc, index: int, *, lo: int, hi: int,
         if cand == index or cand <= 0 or cand >= len(doc.words):
             continue
         cand_gap = _gap_ms_before(doc, cand, floor)
-        cls = _gap_class(cand_gap)
+        cls = _gap_class(cand_gap, check_ms)
         if cls == "unsafe":
             continue
         dist = abs(_boundary_time(doc, cand, floor, ceil) - origin)
@@ -287,7 +291,7 @@ def _safe_boundary(doc: WordsDoc, index: int, *, lo: int, hi: int,
             best_rank, best = rank, (cand, cand_gap, cls)
 
     if best is None:
-        notes.append(f"no silence >= {CHECK_GAP_MS:.0f} ms within {MAX_SHIFT_WORDS} "
+        notes.append(f"no silence >= {check_ms:.0f} ms within {MAX_SHIFT_WORDS} "
                      f"words; boundary left inside speech ({gap:.0f} ms)")
         return index, gap, "unsafe", notes
     notes.append(f"boundary moved {best[0] - index:+d} word(s) into {best[1]:.0f} ms of silence")
@@ -308,8 +312,10 @@ class _Adjusted:
 
 
 def _adjusted_cuts(doc: WordsDoc, cuts: list[Span], floor: float,
-                   ceil: float) -> list[_Adjusted]:
-    """Snap every cut boundary into silence; drop cuts that shrink to nothing."""
+                   ceil: float, restored: list[Span] | None = None,
+                   check_ms: float = CHECK_GAP_MS) -> list[_Adjusted]:
+    """Snap every cut boundary into silence; restore cuts that find none."""
+    restored = restored if restored is not None else []
     out: list[_Adjusted] = []
     n = len(doc.words)
     for idx, span in enumerate(cuts):
@@ -318,13 +324,18 @@ def _adjusted_cuts(doc: WordsDoc, cuts: list[Span], floor: float,
         prev_end = out[-1].span.end if out else 0
         next_start = cuts[idx + 1].start if idx + 1 < len(cuts) else n
 
+        # Boundaries only move INWARD: a cut may shrink to find silence, never
+        # grow into words the editor kept (it ate Ali's words on a real take).
         start, gap_before, cls_before, notes = _safe_boundary(
-            doc, span.start, lo=prev_end, hi=span.end, floor=floor, ceil=ceil)
+            doc, span.start, lo=max(prev_end, span.start), hi=span.end, floor=floor, ceil=ceil,
+            check_ms=check_ms)
         end, gap_after, cls_after, notes_after = _safe_boundary(
-            doc, span.end, lo=max(start + 1, prev_end), hi=next_start, floor=floor, ceil=ceil)
-        if end <= start:
-            # Both boundaries collapsed onto each other: the removal could not
-            # survive the silence rule, so nothing is cut here.
+            doc, span.end, lo=max(start + 1, prev_end), hi=span.end, floor=floor, ceil=ceil,
+            check_ms=check_ms)
+        if end <= start or "unsafe" in (cls_before, cls_after):
+            # No silence to cut in without growing the removal into kept words:
+            # the removal is restored. A filler left in beats a clipped word.
+            restored.append(span)
             continue
         out.append(_Adjusted(
             span=Span(start, end), gap_before_ms=gap_before, gap_after_ms=gap_after,
@@ -441,6 +452,56 @@ def _pad_ranges(doc: WordsDoc, kept: list[Span], profile: dict,
     return out
 
 
+def _split_long_pauses(doc: WordsDoc, kept: list[Span], profile: dict) -> list[Span]:
+    """Split kept spans at silences longer than `cuts.max_pause_ms`.
+
+    Dead air is not a text edit, so the planner never sees it: a clean 3 min
+    take kept 20 s of pauses over 0.5 s. The cut sits in silence by definition
+    (never inside a word, hard rule 6), and `_pad_ranges` leaves the usual
+    breathing room on each side.
+    """
+    max_pause = float(config.get(profile, "cuts.max_pause_ms", MAX_PAUSE_MS) or 0) / 1000.0
+    before = _pad_s(profile, "pad_before_ms", PAD_BEFORE_MS)
+    after = _pad_s(profile, "pad_after_ms", PAD_AFTER_MS)
+    if max_pause <= 0:
+        return kept
+    out: list[Span] = []
+    for span in kept:
+        start = span.start
+        prev_end = prev_score = None
+        for k in range(span.start, span.end):
+            w = doc.words[k]
+            if not w.timed:
+                continue
+            # A gap between words scored ~0 is often speech the aligner lost,
+            # not silence: cutting it chopped mid-phrase on a real take.
+            sure = (w.score is None or w.score >= MIN_PAUSE_SCORE) and \
+                   (prev_score is None or prev_score >= MIN_PAUSE_SCORE)
+            # Only the stretch that is REMOVED has to be silent: the padded edges
+            # stay in the video, and they are where breaths and word tails sit.
+            if (prev_end is not None and w.start - prev_end > max_pause and sure
+                    and _is_silent(doc, prev_end + after, w.start - before)):
+                out.append(Span(start, k))
+                start = k
+            prev_end, prev_score = w.end, w.score
+        out.append(Span(start, span.end))
+    return out
+
+
+def _is_silent(doc: WordsDoc, a: float, b: float) -> bool:
+    """Does the AUDIO say [a, b] is silence? Word timings alone are not enough.
+
+    On a real take the aligner squeezed 20 words into 5 s, leaving a 4 s "gap"
+    that was continuous speech; cutting it deleted a sentence. `silences` is
+    measured from the waveform at alignment time. Without it, no pause is cut.
+    """
+    sil = doc.meta.get("silences")
+    if not sil:
+        return False
+    covered = sum(max(0.0, min(b, e) - max(a, s)) for s, e in sil)
+    return covered >= 0.9 * (b - a)
+
+
 def _merge_close(padded: list[tuple[float, float]]) -> list[list[int]]:
     """Group kept ranges that end up less than 120 ms apart.
 
@@ -471,11 +532,16 @@ def derive(doc: WordsDoc, kept_text: str, profile: dict, source_name: str) -> Cu
 
     floor, ceil = _source_bounds(doc)
     n = len(doc.words)
-    adjusted = _adjusted_cuts(doc, list(result.cut), floor, ceil)
+    restored: list[Span] = []
+    # A fast speaker leaves 40 ms between words; the 150 ms default would
+    # refuse every cut in his speech. The profile sets his floor.
+    check_ms = float(config.get(profile, "cuts.min_gap_ms", CHECK_GAP_MS) or CHECK_GAP_MS)
+    adjusted = _adjusted_cuts(doc, list(result.cut), floor, ceil, restored, check_ms=check_ms)
     kept_spans = _invert_spans([a.span for a in adjusted], n)
     if not kept_spans:
         raise ValueError("every word was cut: nothing left to render")
 
+    kept_spans = _split_long_pauses(doc, kept_spans, profile)
     padded = _pad_ranges(doc, kept_spans, profile, floor, ceil)
     groups = _merge_close(padded)
     ranges = [(padded[g[0]][0], padded[g[-1]][1]) for g in groups]
@@ -491,6 +557,14 @@ def derive(doc: WordsDoc, kept_text: str, profile: dict, source_name: str) -> Cu
     fillers = _filler_tokens(profile)
     cuts: list[CutSpan] = []
     dropped: list[CutSpan] = []
+    for span in restored:
+        klass, reason = classify_cut(doc, span, fillers)
+        rec = CutSpan(span=span, text=diff_align.span_text(doc, span), klass=klass,
+                      reason=reason, gap_before_ms=0.0, gap_after_ms=0.0,
+                      needs_visual_check=False,
+                      notes=["restored: no silence to cut in without deleting kept words"])
+        rec.start, rec.end = doc.span_time(span.start, span.end)
+        dropped.append(rec)
     cut_before_group: dict[int, CutSpan] = {}
 
     for adj in adjusted:

@@ -53,7 +53,8 @@ Return JSON:
                 "claim": "<what must be visible>",
                 "entity": "<company/person/source>",
                 "prefer_source": "<owner's own page or post if known>"}],
-   "strategy": "<4 to 8 sentences in plain English>"}
+   "strategy": "<4 to 8 sentences in plain English>",
+   "story": "<the video's main news story as one headline-style line>"}
 
 Rules:
 * Never change, translate, re-spell or reorder a word you keep. Copy kept words
@@ -65,6 +66,22 @@ Rules:
 * Respect cut_ratio within the stated tolerance.
 * Place insert markers only where the profile's triggers apply. `after_text` must
   be copied verbatim from the transcript and must be text you KEPT.
+* Aim for inserts.per_minute inserts per minute of kept material. Each one goes
+  at the FIRST mention of what it proves: a company or organisation, a figure,
+  a headline or article the speaker refers to, a named event or report.
+* `story` is the one news story the whole video is about, as a headline.
+* Inserts show the ORIGINAL SOURCE of what Ali says at that moment: the
+  document the information came from, not coverage of it. When he describes
+  what happened ("the agents attacked Hugging Face"), `claim` is the incident
+  report or official statement ("OpenAI's technical report on the Hugging Face
+  incident", "Hugging Face's own disclosure of the intrusion"). When he cites a
+  study, figure or ruling, it is the study, filing or official data page. Only
+  when he just names a company, product or tool, show its official page. Never
+  a bare figure no page carries ("the benchmark has 800 questions"). Spread
+  them over the whole video.
+* `claim` states only what the speaker actually said. Add nothing he did not say.
+* Leave `prefer_source` empty unless the transcript itself names the page. Never
+  construct a URL: invented ones are rejected and waste the slot.
 * Never output timestamps. Timing is not your job and any number in seconds you
   produce will be discarded.
 """
@@ -88,6 +105,7 @@ RESPONSE_SCHEMA: dict = {
             },
         },
         "strategy": {"type": "string"},
+        "story": {"type": "string"},
     },
     "required": ["kept_text", "inserts", "strategy"],
     "propertyOrdering": ["kept_text", "inserts", "strategy"],
@@ -149,6 +167,7 @@ class EditPlan:
     source_name: str
     kept_text: str
     strategy: str
+    story: str = ""
     inserts: list[Insert] = field(default_factory=list)
     cut_ratio: float = 0.0
     target_cut_ratio: float | None = None
@@ -166,6 +185,7 @@ class EditPlan:
             "source": self.source_name,
             "kept_text": self.kept_text,
             "strategy": self.strategy,
+            "story": self.story,
             "inserts": [i.to_dict() for i in self.inserts],
             "derived": {
                 "cut_ratio": round(self.cut_ratio, 4),
@@ -188,7 +208,7 @@ class EditPlan:
         meta = d.get("meta", {})
         return cls(
             source_name=d.get("source", ""), kept_text=d.get("kept_text", ""),
-            strategy=d.get("strategy", ""),
+            strategy=d.get("strategy", ""), story=d.get("story", ""),
             inserts=[Insert.from_dict(i) for i in d.get("inserts", [])],
             cut_ratio=float(derived.get("cut_ratio", 0.0)),
             target_cut_ratio=derived.get("target_cut_ratio"),
@@ -227,7 +247,7 @@ def packed_view(doc: WordsDoc, *, break_gap_s: float = 0.5) -> str:
     return pack_transcripts.pack_doc(doc, silence_s=break_gap_s)
 
 def build_prompt(packed_text: str, profile: dict, few_shot: str = "",
-                 feedback: str | None = None) -> str:
+                 feedback: str | None = None, insert_target: int = 0) -> str:
     """Assemble the user half of the planner prompt."""
     tolerance = profile.get("cut_ratio_tolerance", derive_cuts.CUT_RATIO_TOLERANCE)
     parts = [
@@ -236,9 +256,15 @@ def build_prompt(packed_text: str, profile: dict, few_shot: str = "",
         # instruction to the editor, and both cost prompt budget.
         json.dumps({k: v for k, v in profile.items() if k not in ("examples", "meta")},
                    ensure_ascii=False, indent=1),
-        f"\nTarget cut_ratio {profile.get('cut_ratio', 'unknown')} "
-        f"within +/-{tolerance}.",
     ]
+    if insert_target:
+        # A rate ("3 per minute") was read as a ceiling; a count is not.
+        parts.append(f"\nPlace about {insert_target} inserts in this take.")
+    parts.append(f"\nTarget cut_ratio {profile['cut_ratio']} within +/-{tolerance}."
+                 if profile.get("cut_ratio") is not None else
+                 ("\nNo learned cut_ratio yet, so edit conservatively: remove fillers, false "
+                  "starts, repeats and earlier retakes only. Never delete a sentence that "
+                  "carries information about the story; an aside is Ali's call, not yours."))
     if few_shot.strip():
         parts += ["\nWORKED EXAMPLES FROM PAST EPISODES:", few_shot.strip()]
     parts += ["\nRAW TAKE (verbatim, phrase per line, gap is the silence before the phrase):",
@@ -313,8 +339,24 @@ def _validate_inserts(doc: WordsDoc, kept_spans: Sequence,
     return inserts, failures
 
 
-def validate(doc: WordsDoc, payload: dict, profile: dict, source_name: str
-             ) -> tuple[EditPlan | None, list[str]]:
+COLD_START_MAX_CUT_WORDS = 3
+
+
+def restore_long_deletions(doc: WordsDoc, cuts: Sequence) -> str:
+    """Kept text with every deletion longer than 3 words put back.
+
+    Until `zeta learn` has seen Ali's real edits, the planner has no business
+    removing sentences: told to be conservative, it still deleted "OpenAI's
+    first mistake", the core of the story. Fillers, stutters and repeats are
+    1-3 words, so that is all a cold start may cut, whatever the model says.
+    """
+    drop = {i for c in cuts if c.end - c.start <= COLD_START_MAX_CUT_WORDS
+            for i in range(c.start, c.end)}
+    return " ".join(w.word for i, w in enumerate(doc.words) if i not in drop)
+
+
+def validate(doc: WordsDoc, payload: dict, profile: dict, source_name: str,
+             *, strict_density: bool = True) -> tuple[EditPlan | None, list[str]]:
     """Turn a model payload into a plan, or into the list of reasons it is not one."""
     failures: list[str] = []
     kept_text = (payload.get("kept_text") or "").strip() if isinstance(payload, dict) else ""
@@ -325,6 +367,9 @@ def validate(doc: WordsDoc, payload: dict, profile: dict, source_name: str
         failures.append("strategy is missing: say in 4 to 8 sentences what you did and why")
 
     diff = diff_align.diff_text_against_words(doc, kept_text)
+    if not diff.invented and profile.get("cut_ratio") is None:
+        kept_text = restore_long_deletions(doc, diff.cut)
+        diff = diff_align.diff_text_against_words(doc, kept_text)
     if diff.invented:
         shown = ", ".join(repr(t) for t in diff.invented[:10])
         return None, [
@@ -350,6 +395,13 @@ def validate(doc: WordsDoc, payload: dict, profile: dict, source_name: str
     inserts, insert_failures = _validate_inserts(doc, cut_plan.kept_spans,
                                                  payload.get("inserts") or [])
     failures += insert_failures
+    # A planner asked for 3 a minute placed 4 in 3 minutes: too few is a
+    # rejection with a reason, like any other miss.
+    want = float((profile.get("inserts") or {}).get("per_minute") or 0) * cut_plan.kept_duration / 60
+    if want >= 2 and len(inserts) < 0.6 * want and strict_density:
+        failures.append(f"only {len(inserts)} insert(s) for ~{round(want)} wanted "
+                        f"(inserts.per_minute); add them where Ali names a source, "
+                        f"report, company or event")
     if failures:
         return None, failures
 
@@ -359,6 +411,7 @@ def validate(doc: WordsDoc, payload: dict, profile: dict, source_name: str
 
     return EditPlan(
         source_name=source_name, kept_text=kept_text, strategy=strategy, inserts=inserts,
+        story=(payload.get("story") or "").strip(),
         cut_ratio=cut_plan.cut_ratio, target_cut_ratio=cut_plan.target_cut_ratio,
         within_band=cut_plan.within_band, warnings=warnings,
         needs_visual_check=cut_plan.needs_visual_check,
@@ -393,14 +446,19 @@ def plan(doc: WordsDoc, packed_text: str, profile: dict, *, source_name: str,
     last: list[str] = []
     for attempt in range(1, max_attempts + 1):
         payload = llm.generate(
-            build_prompt(packed_text, profile, few_shot, feedback),
+            build_prompt(packed_text, profile, few_shot, feedback,
+                         insert_target=round(float((profile.get("inserts") or {}).get(
+                             "per_minute") or 0) * doc.duration() / 60)),
             system=SYSTEM_PROMPT, schema=RESPONSE_SCHEMA, temperature=0.2,
             # A retry that reads its own cached answer is not a retry.
             use_cache=(attempt == 1),
         )
         if isinstance(payload, str):
             payload = json.loads(payload)
-        result, failures = validate(doc, payload, profile, source_name)
+        # Too few inserts earns one retry with the reason; the last attempt is
+        # accepted short rather than failing the whole edit over density.
+        result, failures = validate(doc, payload, profile, source_name,
+                                    strict_density=attempt < max_attempts)
         if result is not None:
             result.attempts = attempt
             return result

@@ -650,8 +650,21 @@ def build_profile(observations: Sequence[PairObservation], *,
     corners = _mode([i.label.get("pip_corner") for i in inserts
                      if i.label.get("pip_corner") not in (None, "none")])
 
+    # Pauses Ali leaves in his published cut set how tight a new edit is. p90
+    # decides what counts as dead air; the kept silence at a cut is about p95.
+    ordered = sorted(gaps)
+    pct = lambda q: ordered[min(len(ordered) - 1, int(q * (len(ordered) - 1)))] if ordered else 0.0
+    kept_ms = min(300.0, max(120.0, pct(0.95)))
+    with_raw = [o for o in observations if o.has_raw]
     profile = {
-        "cut_ratio": _median([o.cut_ratio for o in observations], 0.0),
+        # Only a raw take shows what was cut. From published videos alone the
+        # ratio is unknown (None keeps the planner to fillers and repeats), not 0.
+        "cut_ratio": _median([o.cut_ratio for o in with_raw], 0.0) if with_raw else None,
+        "cuts": {
+            "max_pause_ms": round(max(250.0, 2.5 * pct(0.90))) if ordered else 500,
+            "pad_before_ms": round(kept_ms * 0.6),
+            "pad_after_ms": round(kept_ms * 0.4),
+        },
         "median_kept_gap_ms": _median(beats, 0.0),
         "max_kept_gap_ms": round(max(beats), 1) if beats else 0.0,
         "filler_policy": {
@@ -666,7 +679,9 @@ def build_profile(observations: Sequence[PairObservation], *,
             "median_duration_s": _median([i.duration for i in inserts],
                                          layout_cfg["default_duration_s"]),
             "lead_in_s": _median(lead_ins, layout_cfg["lead_in_s"]),
-            "layout": _map_layout(layouts, layout_cfg["layout"]),
+            # Ali's published inserts are bare cut-outs over his chest (no card,
+            # no face box): that is the fallback when vision names no layout.
+            "layout": _map_layout(layouts, "cutout"),
             "pip_corner": corners or layout_cfg["pip_corner"],
             "pip_scale": _median(pip_scales, layout_cfg["pip_scale"]),
             "triggers": _trigger_order(inserts),

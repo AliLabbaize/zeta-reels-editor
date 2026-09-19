@@ -444,7 +444,7 @@ def ass_header(style: CaptionStyle) -> str:
                 f"{st.get('outline_colour', '&H00000000')},{st.get('back_colour', '&H80000000')},"
                 f"{bold},0,0,0,100,100,0,0,{st.get('border_style', 1)},"
                 f"{st.get('outline', 3)},{st.get('shadow', 0)},{st.get('alignment', 2)},"
-                f"{style.margin_h},{style.margin_h},{style.margin_v},1")
+                f"{style.margin_h},{style.margin_h},{style.margin_v},-1")
 
     lines = [
         "[Script Info]",
@@ -506,16 +506,54 @@ def _karaoke_body(cue: Cue, style: CaptionStyle) -> str:
     return " ".join(parts)
 
 
-def render_ass(cues: Sequence[Cue], style: CaptionStyle) -> str:
+RLM = "\u200f"
+
+
+def render_ass(cues: Sequence[Cue], style: CaptionStyle,
+               english: Sequence[str] | None = None) -> str:
     karaoke_on = bool(style.style.get("highlight_active_word"))
     lines = [ass_header(style)]
-    for cue in cues:
+    ecfg = _english_cfg()
+    only = bool(english) and ecfg.get("mode", "under") == "only"
+    ratio = float(ecfg.get("only_size_ratio", 0.6) if only else ecfg.get("size_ratio", 0.45))
+    en_size = round(scaled_font_size(style) * ratio)
+    w, h = style.play_res
+    # "only": English alone, a little lower than the Darija baseline (still clear
+    # of the Reels UI band). "under": English takes the baseline and the Darija
+    # line moves up by one English line height.
+    en_y = h - int(ecfg.get("only_margin_v", style.margin_v)) if only else h - style.margin_v
+    lift = round(en_size * 1.35) if english and not only else 0
+    for n, cue in enumerate(cues):
+        if english and english[n].strip():
+            en = english[n].strip().replace("\n", " ")
+            cap = int(ecfg.get("only_max_chars", 0) or 0) if only else 0
+            if cap and len(en) > cap:
+                # Break at the space nearest the middle: two short lines stay
+                # clear of the Reels action rail, one long one runs under it.
+                mid = len(en) // 2
+                cut = min((i for i, ch in enumerate(en) if ch == " "),
+                          key=lambda i: abs(i - mid), default=-1)
+                if cut > 0:
+                    en = en[:cut] + "\\N" + en[cut + 1:]
+            lines.append(
+                f"Dialogue: 1,{_ass_time(cue.start)},{_ass_time(cue.end)},{STYLE_PLAIN},,0,0,0,,"
+                f"{{\\an2\\pos({w // 2},{en_y})\\fs{en_size}"
+                f"\\fn{ecfg.get('font', 'Noto Sans')}\\bord4\\b1}}{en}")
+        if only:
+            continue
         # Karaoke needs a time for every word; one unaligned word and the whole
         # line would drift, so the cue degrades to a plain one instead.
         karaoke = karaoke_on and not cue.has_untimed and len(cue.words) > 1
         name = STYLE_KARAOKE if karaoke else STYLE_PLAIN
         body = _karaoke_body(cue, style) if karaoke else cue_text_for_display(cue, style)
-        text = _inline_prefix(style, karaoke) + body.replace("\n", " ")
+        # libass lays a line out LTR unless Encoding is -1, and -1 takes the
+        # direction from the first strong character. The RLM makes that RTL, so
+        # "ليكم واحد part 2" and "in any case هاد" both read right to left.
+        prefix = _inline_prefix(style, karaoke)
+        if lift:
+            prefix = prefix.replace(f"\\pos({w // 2},{h - style.margin_v})",
+                                    f"\\pos({w // 2},{h - style.margin_v - lift})")
+        text = prefix + RLM + body.replace("\n", " ")
         lines.append(f"Dialogue: 0,{_ass_time(cue.start)},{_ass_time(cue.end)},{name},,0,0,0,,{text}")
     return "\n".join(lines) + "\n"
 
@@ -627,15 +665,80 @@ def font_available(name: str, *, runner=None) -> bool | None:
     return name.casefold() in (out.stdout or "").casefold()
 
 
+def _english_cfg() -> dict:
+    try:
+        return configs.load("captions").get("english") or {}
+    except (FileNotFoundError, OSError):
+        return {}
+
+
+_TRANSLATE_SCHEMA = {"type": "object", "required": ["lines"],
+                     "properties": {"lines": {"type": "array", "items": {"type": "string"}}}}
+
+
+def translate_cues(cues: Sequence[Cue], llm, *, context: str = "", _retry: int = 0) -> list[str]:
+    """One English line per caption cue, in one model call.
+
+    Cues are 2-4 word fragments, so the whole talk goes along as context:
+    translated one by one, "هاد ال agents" comes back as nonsense. The model
+    must return exactly one line per cue or the burn would drift out of sync.
+    """
+    # Long lists come back a line or two short (132 for 135 on a real part), and
+    # a short answer cannot be realigned. Batches of 30 with the whole talk as
+    # context come back exact; a batch that miscounts is asked again.
+    if len(cues) > 30:
+        out: list[str] = []
+        for k in range(0, len(cues), 30):
+            batch = cues[k:k + 30]
+            for attempt in range(3):
+                try:
+                    out += translate_cues(batch, llm, context=context, _retry=attempt)
+                    break
+                except ValueError:
+                    if attempt == 2:
+                        raise
+        return out
+    numbered = "\n".join(f"{i + 1}. {c.text}" for i, c in enumerate(cues))
+    prompt = (
+        "These are on-screen caption fragments of a Moroccan news video, spoken in "
+        "Darija with French and English. Translate each numbered fragment into short, "
+        "natural English for an international audience. Keep names, numbers and "
+        "product names. Return exactly one line per fragment, same order, no "
+        "numbering; never merge or split fragments.\n\n"
+        + (f"Full transcript for context:\n{context}\n\n" if context else "")
+        + f"Fragments ({len(cues)}):\n{numbered}")
+    # A retry must not read its own cached miscount back.
+    out = llm.generate(prompt + ("\n" * _retry), schema=_TRANSLATE_SCHEMA, temperature=0.0,
+                       use_cache=_retry == 0)
+    lines = [str(x) for x in (out or {}).get("lines", [])]
+    if len(lines) != len(cues):
+        raise ValueError(f"translation returned {len(lines)} lines for {len(cues)} cues")
+    return lines
+
+
 def write_captions(words: WordsDoc | Mapping[str, WordsDoc], edl: EDL,
                    edit_paths: EditPaths, *, aspect: str | None = None,
                    style: CaptionStyle | None = None,
-                   source: str | None = None, srt: bool | None = None) -> dict:
+                   source: str | None = None, srt: bool | None = None,
+                   llm=None) -> dict:
+    """Darija captions, then (when captions.yaml english.enabled) English under them."""
     st = style or resolve_style(aspect or edl.aspect)
     cues = build_cues(words, edl, style=st, source=source)
     edit_paths.captions.mkdir(parents=True, exist_ok=True)
+    english: list[str] | None = None
+    english_error = None
+    if llm is not None and _english_cfg().get("enabled", True):
+        context = " ".join(c.text for c in cues)
+        try:
+            english = translate_cues(cues, llm, context=context)
+        except Exception as exc:   # Darija still ships; the caller flags the miss
+            english_error = str(exc)
     ass_path = edit_paths.captions / "final.ass"
-    ass_path.write_text(render_ass(cues, st), encoding="utf-8")
+    ass_path.write_text(render_ass(cues, st, english), encoding="utf-8")
+    if english:
+        (edit_paths.captions / "final.en.srt").write_text("\n".join(
+            f"{i}\n{_srt_time(c.start)} --> {_srt_time(c.end)}\n{t}\n"
+            for i, (c, t) in enumerate(zip(cues, english), start=1)), encoding="utf-8")
 
     caps = configs.load("captions") if srt is None else {}
     want_srt = caps.get("export_srt", True) if srt is None else srt
@@ -658,6 +761,8 @@ def write_captions(words: WordsDoc | Mapping[str, WordsDoc], edl: EDL,
         "cues": cues,
         "aspect": st.aspect,
         "bidi": [f.to_dict() for f in bidi],
+        "english": english,
+        "english_error": english_error,
     }
 
 

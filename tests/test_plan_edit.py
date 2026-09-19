@@ -245,3 +245,13 @@ def test_packed_view_is_the_one_packed_format():
     assert view == pack_transcripts.pack_doc(doc, silence_s=0.5)
     assert "gap=800ms" in view
     assert "[en]" in view, "the language tag has to survive into the planner's view"
+
+
+def test_a_cold_start_may_cut_fillers_but_never_a_sentence():
+    from helpers.diff_align import Span
+    from helpers.plan_edit import restore_long_deletions
+    from helpers.words import Word, WordsDoc
+    doc = WordsDoc(words=[Word(word=w) for w in
+                          "يعني OpenAI دارت واحد الغلط كبير بزاف euh صافي".split()])
+    kept = restore_long_deletions(doc, [Span(0, 1), Span(1, 7), Span(7, 8)])
+    assert kept == "OpenAI دارت واحد الغلط كبير بزاف صافي"   # fillers out, sentence back

@@ -64,13 +64,13 @@ def test_kept_words_survive_and_cut_words_do_not():
 # -------- hard rule 7: padding ------------------------------------------------
 
 
-def test_default_padding_is_50_before_and_80_after():
+def test_default_padding_is_140_before_and_100_after():
     doc = mkdoc(gapped(["one", "two", "three", "four"]))
     plan = derive(doc, "one four", {}, "raw01")
 
-    assert plan.ranges[0].start == pytest.approx(doc.words[0].start - 0.050)
-    assert plan.ranges[0].end == pytest.approx(doc.words[0].end + 0.080)
-    assert plan.ranges[1].start == pytest.approx(doc.words[3].start - 0.050)
+    assert plan.ranges[0].start == pytest.approx(doc.words[0].start - 0.140)
+    assert plan.ranges[0].end == pytest.approx(doc.words[0].end + 0.100)
+    assert plan.ranges[1].start == pytest.approx(doc.words[3].start - 0.140)
 
 
 def test_padding_never_swallows_a_neighbouring_word():
@@ -110,17 +110,14 @@ def test_profile_padding_is_clamped_to_the_30_200_ms_window():
 # -------- silence rule --------------------------------------------------------
 
 
-def test_a_100ms_gap_is_never_used_as_a_cut_point():
+def test_a_filler_with_no_silence_around_it_stays_rather_than_eating_neighbours():
     doc = mkdoc([("wa", 0.50, 0.90), ("hello", 1.40, 1.80), ("umm", 1.90, 2.20),
                  ("world", 2.30, 2.70), ("ok", 3.20, 3.60)], duration=4.0)
     plan = derive(doc, "wa hello world ok", {}, "raw01")
 
-    assert len(plan.cuts) == 1
-    cut = plan.cuts[0]
-    assert cut.gap_before_ms >= CHECK_GAP_MS and cut.gap_after_ms >= CHECK_GAP_MS
-    # The boundary walked out of the 100 ms gaps into the 500 ms ones, so the
-    # removal grew past what the editor literally deleted -- and says so.
-    assert "umm" in cut.text and cut.needs_visual_check
+    # The old rule walked out into the 500 ms gaps and deleted "hello" and
+    # "world" too. Ali's words outrank a filler: nothing is cut.
+    assert plan.cuts == []
     for r in plan.ranges:
         for edge in (r.start, r.end):
             assert not (1.80 < edge < 1.90) and not (2.20 < edge < 2.30)
@@ -242,3 +239,20 @@ def test_plan_serialises_for_the_report():
 
     assert d["source"] == "raw01" and d["cuts"][0]["class"]
     assert set(d) >= {"ranges", "cuts", "cut_ratio", "cut_ratio_delta", "within_band"}
+
+
+def test_a_long_pause_inside_kept_speech_is_cut_but_its_words_stay():
+    doc = mkdoc([("واحد", 0.5, 0.9), ("جوج", 1.0, 1.4), ("تلاتة", 3.4, 3.8), ("ربعة", 3.9, 4.3)])
+    doc.meta["silences"] = [[1.4, 3.4]]
+    plan = derive(doc, "واحد جوج تلاتة ربعة", {}, "raw01")
+    assert [(r.start, r.end) for r in plan.ranges] == [
+        pytest.approx((0.36, 1.5)), pytest.approx((3.26, 4.4))]   # 2 s of air gone
+    assert len(derive(doc, "واحد جوج تلاتة ربعة", {"cuts": {"max_pause_ms": 0}},
+                      "raw01").ranges) == 1                      # 0 disables it
+
+
+def test_a_gap_the_audio_says_is_speech_is_never_cut():
+    # Misaligned words leave a timing gap over continuous speech.
+    doc = mkdoc([("واحد", 0.5, 0.9), ("جوج", 1.0, 1.4), ("تلاتة", 3.4, 3.8), ("ربعة", 3.9, 4.3)])
+    doc.meta["silences"] = [[1.4, 1.6]]
+    assert len(derive(doc, "واحد جوج تلاتة ربعة", {}, "raw01").ranges) == 1

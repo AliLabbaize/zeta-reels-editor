@@ -8,6 +8,20 @@ font:
   fallback: "IBM Plex Sans Arabic"
   latin_fallback: "Noto Sans"
 
+# English line under the Darija one, so a Reel reads outside Morocco too.
+# One Gemini call per video translates every caption cue with the full talk as
+# context; final.en.srt is written alongside for YouTube and other platforms.
+english:
+  enabled: true
+  mode: only                 # only = English replaces the Darija burn | under = both
+  size_ratio: 0.45           # "under": of the Darija font size
+  only_size_ratio: 0.52      # "only": English alone reads bigger (77 px)
+  only_margin_v: 320         # "only": baseline 1600 of 1920, just above where the
+                             # Reels app draws the username and description
+  only_max_chars: 30         # wrap longer English lines: at 77 px a 31st char
+                             # reaches the right action rail (like/comment/share)
+  font: "Noto Sans"
+
 aspects:
   "9:16":                      # Reels / TikTok / Shorts
     resolution: [1080, 1920]
