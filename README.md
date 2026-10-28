@@ -1,13 +1,19 @@
 # Zeta reels editor
 
-Cuts, captions and sources a Zeta facecam news video end to end.
+An editor for Darija facecam videos (with French and English code switching),
+built with and for Claude Code. What it has made so far:
 
-Raw Darija footage in (with French and English code switching), out comes a cut,
-word-level-captioned vertical video with **verified** screenshots of the sources
-placed where they are mentioned, plus a report showing every cut and every
-insert with its reason.
-
-It learns Ali's editing style from past videos first, then applies it.
+* **News reels.** Raw take in; out comes a cut, word-level-captioned vertical
+  video with **verified** screenshots of the sources placed where they are
+  mentioned, plus a report showing every cut and every insert with its reason.
+  It learns the editing style from past videos first, then applies it.
+* **Long YouTube facecam videos and vlogs** (27 min, 1h30): English subtitles
+  burned onto the uncut 4K source, readable (>= 1 s cues, ~17 chars/s, clause
+  breaks), with a full review pass. `scripts/burn_subs.sh`.
+* **Vertical clips cut from a long video**, with an outro built from a real frame.
+* **YouTube thumbnails** from a real frame. `scripts/thumbnail.py`.
+* **Publishing** to TikTok, Instagram Reels and Facebook Reels in one command:
+  `zeta publish`.
 
 ## What you need
 
