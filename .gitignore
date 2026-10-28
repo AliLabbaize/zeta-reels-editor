@@ -16,3 +16,6 @@ tests/fixtures/*.wav
 
 # Build metadata from `uv pip install -e .` (the [align] extra, among others).
 *.egg-info/
+
+# macOS
+.DS_Store

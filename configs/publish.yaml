@@ -1,0 +1,25 @@
+# zeta publish (docs/PUBLISH_SPEC.md).
+#
+# Limits are checked before anything uploads, so a file one platform will reject
+# stops the whole run before a single post exists. When a platform raises a
+# limit, edit it here.
+
+graph_version: v26.0          # Meta Graph API, Facebook and Instagram
+
+caption:
+  model: gemini-3.5-flash-lite
+  examples: 8                 # last N of Ali's caption edits shown to the model
+
+limits:
+  caption_chars: 2200         # all three platforms
+  ig_hashtags: 30
+  ig_mentions: 20
+  min_duration_s: 3
+  # Meta's IG reference as quoted by third parties: 15 min, 300 MB. Unverified.
+  # Over the size, a two-pass re-encoded copy is uploaded instead of refusing.
+  instagram_max_s: 900
+  instagram_max_mb: 300
+  # Meta's Reels Publishing API: 3 to 90 s. Longer videos go up as a regular
+  # Page video instead, which Facebook shows as a Reel since June 2025.
+  facebook_max_s: 90
+  # TikTok: per account, read from creator_info at publish time.

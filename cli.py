@@ -10,6 +10,7 @@
     zeta edit        raw01.mp4 --profile style_profile.json [--links links.txt] [--auto]
     zeta review      -v <videos_dir> [--export resolve]
     zeta benchmark   --manifest bench.json -v <videos_dir>
+    zeta publish     final.mp4 --to tiktok,ig,fb --privacy PUBLIC_TO_EVERYONE [--at ...]
 
 `edit` is every stage in order; the others are the same stages individually so a
 run can be resumed after a fix without redoing the expensive parts. Nothing is
@@ -160,6 +161,9 @@ def stage_transcribe(paths: EditPaths, *, backend: str | None = None,
         report = qa_words.qa(doc, wav, cfg, edit_paths=paths, name=source.name)
         _say(qa_words.format_report(report).strip().splitlines()[0])
         if not report.get("ok"):
+            # Kept beside, never as words.json: the gate still blocks every
+            # consumer, but 7 min of alignment on a long take is not thrown away.
+            doc.save(paths.transcripts / f"{source.name}.words.qa_failed.json")
             raise SystemExit(
                 f"QA failed for {source.name}: {report.get('failures')}\n"
                 f"see {paths.transcripts / (source.name + '.qa.json')}")
@@ -743,10 +747,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--variants", help="comma-separated variant ids (default: a,b,c,d)")
     p.set_defaults(func=cmd_benchmark)
 
+    # Parsed by helpers/publish.py itself; listed here so `zeta --help` shows it.
+    sub.add_parser("publish", add_help=False,
+                   help="post to TikTok / Instagram / Facebook Reels (docs/PUBLISH_SPEC.md)")
+
     return ap
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["publish"]:
+        from helpers import publish
+        return publish.main(argv[1:])
     args = build_parser().parse_args(argv)
     # The extras' tools (shot-scraper, yt-dlp) live beside this interpreter, which
     # is not on PATH when `.venv/bin/python cli.py` runs without an activated venv.

@@ -136,6 +136,18 @@ render` reuses the cut segments when only cards or captions changed, and
 insert density, layout and triggers, but not the cut ratio or the filler policy:
 a finished video does not record what was removed, so those need the raw take.
 
+### Publish
+
+```bash
+zeta publish --login tiktok                      # once per platform (meta = Facebook + Instagram)
+zeta publish final.mp4 --suggest-caption         # draft caption in edit/caption.txt, edit it
+zeta publish final.mp4 --to tiktok,ig,fb --privacy PUBLIC_TO_EVERYONE
+zeta publish final.mp4 --to all --privacy ... --at "2026-11-02 18:00"
+```
+
+Needs your own TikTok and Meta developer apps (keys in `.env`, see
+`.env.example`). Design, limits and platform rules: `docs/PUBLISH_SPEC.md`.
+
 Stages also run on their own: `zeta ingest`, `zeta transcribe`, `zeta plan`,
 `zeta research`, `zeta render`, `zeta benchmark`.
 

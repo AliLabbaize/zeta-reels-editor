@@ -196,6 +196,18 @@ has met Ali's footage.
 5. Screenshots last: they need a live browser and are the only stage that can
    put a factual error on screen.
 
+## Publishing (`zeta publish`, 2026-10-28)
+
+TikTok, Instagram Reels, Facebook Reels, scheduling, caption suggestions that
+learn from Ali's edits. Unit-tested offline (`tests/test_publish.py`) and
+`--suggest-caption` ran on IMG_7507. Live on 2026-10-28: Instagram Reel and
+Facebook Reel posted (and a Facebook draft); TikTok inbox drafts delivered
+(~5-10 min, no caption, TikTok adds #<AppName>). Unaudited TikTok cannot
+direct-post to a public account, and TikTok does not audit tools that only
+post to the owner's accounts. Facebook videos
+over 90 s go up as regular Page videos (Reels API cap); Instagram files over
+300 MB are re-encoded two-pass to fit (checked on a real clip).
+
 ## Waiting on Ali
 
 * 3-10 raw/published pairs plus `pairs.csv` (format in `helpers/fetch.py`).
