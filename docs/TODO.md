@@ -14,3 +14,10 @@
   test so it cannot change meaning.
 - Keep the vendored files untouched (`helpers/render.py`,
   `helpers/timeline_view.py`).
+
+## Split the YouTube tooling out
+
+`scripts/burn_subs.sh`, `scripts/thumbnail.py` and the long-video subtitle /
+clip workflow (SKILL.md, YouTube sections) are Ali's own YouTube process, not
+part of the reels editor. They stay in the repo for now and are left out of the
+README; move them to their own repo or folder when it is worth the split.
