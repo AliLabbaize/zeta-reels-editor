@@ -46,3 +46,40 @@ def test_a_long_script_is_translated_in_batches_and_a_miscount_is_retried():
     gemini_client.register_mock(answer)
     out = captions.translate_cues(cues, LLM())
     assert len(out) == 65 and calls == [30, 30, 30, 5]
+
+
+def test_a_translation_shifted_by_one_cue_is_caught_by_its_echo():
+    # 30 for 30 but each line one cue late: the count passes, the echo does not.
+    gemini_client.register_mock(lambda req: {"lines": [
+        {"src": "Hugging Face", "en": "Hugging Face"}, {"src": "", "en": ""}]})
+    with pytest.raises(ValueError, match="echoes"):
+        captions.translate_cues(CUES, LLM())
+    gemini_client.register_mock(lambda req: {"lines": [
+        {"src": "السلام عليكم", "en": "Peace be upon you"},
+        {"src": "Hugging Face.", "en": "Hugging Face"}]})
+    assert captions.translate_cues(CUES, LLM()) == ["Peace be upon you", "Hugging Face"]
+
+
+def test_numbering_the_model_adds_is_stripped():
+    gemini_client.register_mock(lambda req: {"lines": [
+        {"src": "السلام عليكم", "en": "1. Peace be upon you"},
+        {"src": "Hugging Face", "en": "2) Hugging Face"}]})
+    assert captions.translate_cues(CUES, LLM()) == ["Peace be upon you", "Hugging Face"]
+
+
+def test_english_is_regrouped_into_readable_cues():
+    from types import SimpleNamespace as N
+    # The IMG_7487 failure: 0.1-0.5 s fragments, a word split across two, a line ending on "of a".
+    frags = [(0.0, 0.4, "When Marx was"), (0.4, 0.9, "writing the Communist Mani-"),
+             (0.9, 1.3, "-festo or Rousseau"), (1.3, 1.8, "was writing an inspection of a"),
+             (1.8, 2.6, "building in New York."), (5.0, 5.2, "I mean")]
+    out = captions.readable_english([N(start=s, end=e) for s, e, _ in frags], [t for *_, t in frags])
+    text = " ".join(t for *_, t in out)
+    assert "Manifesto" in text and "Mani-" not in text
+    assert not any(captions._dangles(t) for *_, t in out)
+    assert all(e - s >= 1.0 for s, e, _ in out)                     # nothing flashes by
+    assert all(a[1] <= b[0] for a, b in zip(out, out[1:]))         # never overlapping
+    assert out[-1][2] == "I mean"                                  # a 2.4 s pause is never merged across
+    assert "\\N" in captions.break_line("they want normal people like me. Trump, folks,", 33)
+    assert captions.break_line("they want normal people like me. Trump, folks,", 33).startswith(
+        "they want normal people like me.")

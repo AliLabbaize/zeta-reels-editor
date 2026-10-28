@@ -150,6 +150,14 @@ one. Order of work:
 * **Alignment aliases.** Digits, Latin names and French words get a grapheme
   alias the Arabic acoustic model can actually align. Seed them from
   `configs/transcribe.yaml: custom_vocabulary`.
+* **Burned captions are moderated text; the audio is not.** TikTok, Instagram
+  and Facebook read the burn, and a handful of words demote the whole reel. In
+  the English burn only, write the demoting words the way creators do
+  (`unalive`, `k*lled`, `s3x`, `d*ugs`) - `translate_cues` already asks for it.
+  That is the whole licence: fidelity wins every other conflict. Never soften,
+  hedge or drop a claim, a number, a name or an insult to be safe, never touch
+  the Darija line or the audio, and never let a caption say something Ali did
+  not say. A line with none of those words is translated straight.
 * **Captions must be tested on bidi samples.** A mixed RTL/LTR line can render
   correctly in one player and scrambled in another. `captions.check_bidi` lists
   them; look at three before trusting a style change.
@@ -164,6 +172,31 @@ one. Order of work:
 * Capture width is derived from the safe width so that one CSS pixel of the page
   survives as at least one device pixel in the delivered frame. A desktop-width
   capture halves every glyph and the insert becomes decoration.
+
+## Subtitles a viewer can read (Ali, 2026-10-25)
+
+"Sometimes it's too fast and you cut words in two." The English burn used to
+inherit the Darija 2-4 word chunks: 0.1-0.5 s cues at 40+ chars/s, "Mani-" /
+"-festo", lines ending on "of a". Now `captions.readable_english` rebuilds the
+English as one word stream and re-cuts it. The rules (Netflix English timed-text
+guide + short-form caption guidance), all in `configs/captions.yaml:
+english.readability`:
+
+* **Speed:** target <= 17 chars/s (Netflix ceiling 20). Fast speech can still
+  exceed it; the translation prompt asks for concise subtitle English (fillers
+  dropped) to close the gap, never for dropped claims, names or numbers.
+* **Duration:** every cue >= 1.0 s, <= 6 s; held until the next starts when the
+  blank between them would be < 0.3 s (flicker); 2-frame gap, never overlapping.
+* **Size:** max 2 lines of 33 chars on 9:16 (58 chars per cue).
+* **Where to cut a cue:** sentence end > comma/clause > before a conjunction or
+  preposition. Never after "a / the / of / to / and / my / is ...", never across
+  a pause > 0.8 s, never inside a word.
+* **Where to break a line:** same priorities, bottom-heavy, a sentence end beats
+  a balanced split.
+
+Check before rendering: read `captions/final.en.srt` top to bottom (it is the
+same cues as the burn). Hand fixes go into the .ass AFTER `stage_captions`;
+re-running it re-translates and wipes them.
 
 ## Fact-check before he posts
 

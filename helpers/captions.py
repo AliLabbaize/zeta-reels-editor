@@ -26,6 +26,7 @@ never uppercased: `uppercase_latin` applies to Latin-only lines only.
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import re
 import sys
@@ -509,11 +510,143 @@ def _karaoke_body(cue: Cue, style: CaptionStyle) -> str:
 RLM = "\u200f"
 
 
+# A cue may not END on one of these: "an inspection of a" / "building" reads as
+# two broken halves. Lines also never break right after one.
+_DANGLING = frozenset(
+    "a an the of to in on at for with from by about into as and or but nor so "
+    "that which who whose this these those my your his her its our their "
+    "is are was were be been am not no very more most than i we you he she they "
+    "it there if when because like".split())
+
+
+def _dangles(text: str) -> bool:
+    t = text.rstrip()
+    last = re.sub(r"[^\w']", "", t.rsplit(" ", 1)[-1].casefold()) if t else ""
+    return t.endswith("-") or (last in _DANGLING and not re.search(r"[.,;:!?]$", t))
+
+
+def readable_english(cues: Sequence[Cue], english: Sequence[str],
+                     rules: Mapping | None = None) -> list[tuple[float, float, str]]:
+    """Regroup per-fragment English into cues a viewer can actually read.
+
+    Fragments follow the Darija chunking (2-4 words), so their English came out
+    at 40+ chars/s, cut "Mani-" / "-festo" across two cues and ended lines on
+    "of a". Merge neighbours until each cue is readable (Netflix: <= 20 cps,
+    >= 5/6 s, two lines max), never ends on a dangling word, then hold each one
+    long enough to read without running into the next.
+    """
+    r = {"max_cps": 17.0, "min_duration_s": 1.0, "max_duration_s": 6.0,
+         "max_chars": 66, "merge_gap_s": 0.8, "gap_s": 0.067, **(rules or {})}
+    # One English word stream; each word timed by spreading its fragment's span
+    # over the fragment's words (the English has no acoustic times of its own).
+    words: list[list] = []          # [text, start, end]
+    for c, en in zip(cues, english):
+        toks = (en or "").split()
+        if not toks:
+            continue
+        if words and words[-1][0].endswith("-") and toks[0].startswith("-"):
+            words[-1][0] = words[-1][0][:-1] + toks[0][1:]   # "Mani-" + "-festo"
+            words[-1][2] = c.start + (c.end - c.start) / len(toks)
+            toks = toks[1:]
+        step = (c.end - c.start) / max(len(toks), 1)
+        words += [[t, c.start + k * step, c.start + (k + 1) * step] for k, t in enumerate(toks)]
+
+    def best_cut(cur: list) -> int:
+        # Index of the first word of the NEXT cue: after punctuation, else before
+        # a conjunction/preposition, never after a dangling word, longer first.
+        best, best_score = len(cur) - 1, None
+        for k in range(1, len(cur)):
+            head = " ".join(w[0] for w in cur[:k])
+            if len(head) > r["max_chars"]:
+                break
+            score = -len(head) / 10
+            if re.search(r"[.!?]$", head):
+                score -= 30
+            elif re.search(r"[,;:]$", head):
+                score -= 20
+            elif cur[k][0].casefold() in _DANGLING:
+                score -= 8
+            if _dangles(head):
+                score += 40
+            if best_score is None or score < best_score:
+                best, best_score = k, score
+        return best
+
+    out: list[list] = []
+    cur: list = []
+    for w in words:
+        if cur and w[1] - cur[-1][2] > r["merge_gap_s"]:   # a real pause ends the cue
+            out.append(cur); cur = []
+        cur.append(w)
+        text = " ".join(x[0] for x in cur)
+        if re.search(r"[.!?]$", w[0]) and len(text) >= 20:
+            out.append(cur); cur = []
+        elif len(text) > r["max_chars"] or cur[-1][2] - cur[0][1] > r["max_duration_s"]:
+            k = best_cut(cur)
+            out.append(cur[:k]); cur = cur[k:]
+    if cur:
+        out.append(cur)
+    out = [[g[0][1], g[-1][2], " ".join(x[0] for x in g)] for g in out if g]
+    # A tail too short to read ("beating up people.") joins a neighbour when the
+    # pair still fits on two lines; otherwise it keeps what time it has.
+    i = 0
+    while i < len(out):
+        s, e, t = out[i]
+        if e - s < r["min_duration_s"] and len(out) > 1:
+            j = min((k for k in (i - 1, i + 1) if 0 <= k < len(out)), key=lambda k: len(out[k][2]))
+            a, b = sorted((i, j))
+            joined = f"{out[a][2]} {out[b][2]}"
+            if len(joined) <= r["max_chars"] and out[b][0] - out[a][1] <= r["merge_gap_s"]:
+                out[a:b + 1] = [[out[a][0], out[b][1], joined]]
+                i = max(a - 1, 0)
+                continue
+        i += 1
+    for i, cue in enumerate(out):
+        nxt = out[i + 1][0] - r["gap_s"] if i + 1 < len(out) else cue[1] + r["max_duration_s"]
+        want = cue[0] + max(r["min_duration_s"], len(cue[2]) / r["max_cps"])
+        cue[1] = max(cue[1], min(want, nxt, cue[0] + r["max_duration_s"]))
+        if 0 < nxt - cue[1] < 0.3:      # a sub-0.3 s blank between two cues reads as flicker
+            cue[1] = nxt
+    return [tuple(c) for c in out]
+
+
+def break_line(text: str, cap: int) -> str:
+    """Two lines when one is too long: after punctuation or before a conjunction /
+    preposition, never after a dangling word, bottom-heavy, never mid-word."""
+    if not cap or len(text) <= cap:
+        return text
+    best, best_score = None, None
+    for i, ch in enumerate(text):
+        if ch != " ":
+            continue
+        top, bot = text[:i], text[i + 1:]
+        if len(top) > cap or len(bot) > cap:
+            continue
+        score = abs(len(top) - len(bot)) + (6 if len(top) > len(bot) else 0)
+        if re.search(r"[.!?]$", top):      # a sentence end beats a balanced split
+            score -= 40
+        elif re.search(r"[,;:]$", top):
+            score -= 20
+        elif bot.split(" ", 1)[0].casefold() in _DANGLING:
+            score -= 8
+        if _dangles(top):
+            score += 30
+        if best_score is None or score < best_score:
+            best, best_score = i, score
+    if best is None:   # no split keeps both lines under the cap: the most balanced one
+        spaces = [i for i, ch in enumerate(text) if ch == " "]
+        best = min(spaces, key=lambda i: max(i, len(text) - i - 1), default=None)
+    return text if best is None else text[:best] + "\\N" + text[best + 1:]
+
+
 def render_ass(cues: Sequence[Cue], style: CaptionStyle,
                english: Sequence[str] | None = None) -> str:
     karaoke_on = bool(style.style.get("highlight_active_word"))
     lines = [ass_header(style)]
     ecfg = _english_cfg()
+    # The "only" numbers are measured against one platform's UI; a 16:9 YouTube
+    # frame has none of the Reels chrome, so each aspect may override them.
+    ecfg = {**ecfg, **((ecfg.get("aspects") or {}).get(style.aspect) or {})}
     only = bool(english) and ecfg.get("mode", "under") == "only"
     ratio = float(ecfg.get("only_size_ratio", 0.6) if only else ecfg.get("size_ratio", 0.45))
     en_size = round(scaled_font_size(style) * ratio)
@@ -523,24 +656,21 @@ def render_ass(cues: Sequence[Cue], style: CaptionStyle,
     # line moves up by one English line height.
     en_y = h - int(ecfg.get("only_margin_v", style.margin_v)) if only else h - style.margin_v
     lift = round(en_size * 1.35) if english and not only else 0
+    # Two short lines stay clear of the Reels action rail, one long one runs under it.
+    cap = int(ecfg.get("only_max_chars", 0) or 0) if only else 0
+    en_line = lambda s, e, t: (
+        f"Dialogue: 1,{_ass_time(s)},{_ass_time(e)},{STYLE_PLAIN},,0,0,0,,"
+        f"{{\\an2\\pos({w // 2},{en_y})\\fs{en_size}"
+        f"\\fn{ecfg.get('font', 'Noto Sans')}\\bord4\\b1}}{break_line(t, cap)}")
+    if only:
+        # English alone owns the screen, so it gets its own readable timing
+        # instead of inheriting the Darija fragments'.
+        lines += [en_line(s, e, t) for s, e, t in
+                  readable_english(cues, english, ecfg.get("readability"))]
+        return "\n".join(lines) + "\n"
     for n, cue in enumerate(cues):
         if english and english[n].strip():
-            en = english[n].strip().replace("\n", " ")
-            cap = int(ecfg.get("only_max_chars", 0) or 0) if only else 0
-            if cap and len(en) > cap:
-                # Break at the space nearest the middle: two short lines stay
-                # clear of the Reels action rail, one long one runs under it.
-                mid = len(en) // 2
-                cut = min((i for i, ch in enumerate(en) if ch == " "),
-                          key=lambda i: abs(i - mid), default=-1)
-                if cut > 0:
-                    en = en[:cut] + "\\N" + en[cut + 1:]
-            lines.append(
-                f"Dialogue: 1,{_ass_time(cue.start)},{_ass_time(cue.end)},{STYLE_PLAIN},,0,0,0,,"
-                f"{{\\an2\\pos({w // 2},{en_y})\\fs{en_size}"
-                f"\\fn{ecfg.get('font', 'Noto Sans')}\\bord4\\b1}}{en}")
-        if only:
-            continue
+            lines.append(en_line(cue.start, cue.end, english[n].strip().replace("\n", " ")))
         # Karaoke needs a time for every word; one unaligned word and the whole
         # line would drift, so the cue degrades to a plain one instead.
         karaoke = karaoke_on and not cue.has_untimed and len(cue.words) > 1
@@ -672,8 +802,28 @@ def _english_cfg() -> dict:
         return {}
 
 
-_TRANSLATE_SCHEMA = {"type": "object", "required": ["lines"],
-                     "properties": {"lines": {"type": "array", "items": {"type": "string"}}}}
+_TRANSLATE_SCHEMA = {"type": "object", "required": ["lines"], "properties": {"lines": {
+    "type": "array", "items": {"type": "object", "required": ["src", "en"],
+                               "properties": {"src": {"type": "string"},
+                                              "en": {"type": "string"}}}}}}
+
+
+def _same_fragment(echo: str, text: str) -> bool:
+    squash = lambda t: re.sub(r"[\W_]+", "", t.casefold())
+    return difflib.SequenceMatcher(None, squash(echo), squash(text)).ratio() >= 0.6
+
+
+def _translate_batch(batch: Sequence[Cue], llm, context: str) -> list[str]:
+    """Three asks, then halves. One batch on a 27 min talk came back 27 for 30
+    three times running, and a raise there dropped the English for all 871 cues."""
+    for attempt in range(3):
+        try:
+            return translate_cues(batch, llm, context=context, _retry=attempt)
+        except ValueError:
+            if len(batch) == 1 and attempt == 2:
+                raise
+    h = len(batch) // 2
+    return _translate_batch(batch[:h], llm, context) + _translate_batch(batch[h:], llm, context)
 
 
 def translate_cues(cues: Sequence[Cue], llm, *, context: str = "", _retry: int = 0) -> list[str]:
@@ -689,31 +839,51 @@ def translate_cues(cues: Sequence[Cue], llm, *, context: str = "", _retry: int =
     if len(cues) > 30:
         out: list[str] = []
         for k in range(0, len(cues), 30):
-            batch = cues[k:k + 30]
-            for attempt in range(3):
-                try:
-                    out += translate_cues(batch, llm, context=context, _retry=attempt)
-                    break
-                except ValueError:
-                    if attempt == 2:
-                        raise
+            out += _translate_batch(cues[k:k + 30], llm, context)
         return out
     numbered = "\n".join(f"{i + 1}. {c.text}" for i, c in enumerate(cues))
     prompt = (
         "These are on-screen caption fragments of a Moroccan news video, spoken in "
         "Darija with French and English. Translate each numbered fragment into short, "
-        "natural English for an international audience. Keep names, numbers and "
-        "product names. Return exactly one line per fragment, same order, no "
-        "numbering; never merge or split fragments.\n\n"
+        "natural English for an international audience: subtitle English, concise "
+        "(drop fillers like 'you know', 'I mean', 'like', 'so' and repeated words) "
+        "because it is read at speaking speed. Keep names, numbers and "
+        "product names. Return exactly one item per fragment, same order: src = the "
+        "fragment copied exactly, en = the English of THAT fragment only. A sentence "
+        "often runs across fragments; never move words from one fragment's English "
+        "into another's, never merge or split fragments. Never split one English word "
+        "across two fragments with a hyphen (\"Mani-\" / \"-festo\"): put the whole "
+        "word in the fragment where it is said.\n"
+        # Burned text is what TikTok/IG/FB moderation actually reads; a handful of
+        # words demote a whole reel. Faithfulness wins every time it conflicts:
+        # softening the claim would make the caption say something he did not say.
+        "Keep the meaning and the tone exactly, including criticism, accusations "
+        "and strong opinions. Only for the few words that get a video demoted on "
+        "TikTok/Instagram/Facebook - dying, killing, suicide, sex, drugs, slurs - "
+        "use the ordinary creator spelling (\"unalive\", \"k*lled\", \"s3x\", "
+        "\"d*ugs\"). Never soften, hedge, generalise or drop a claim, a number, a "
+        "name or an insult to make it safer; if a line has none of those words, "
+        "translate it straight.\n\n"
         + (f"Full transcript for context:\n{context}\n\n" if context else "")
         + f"Fragments ({len(cues)}):\n{numbered}")
-    # A retry must not read its own cached miscount back.
-    out = llm.generate(prompt + ("\n" * _retry), schema=_TRANSLATE_SCHEMA, temperature=0.0,
-                       use_cache=_retry == 0)
-    lines = [str(x) for x in (out or {}).get("lines", [])]
-    if len(lines) != len(cues):
-        raise ValueError(f"translation returned {len(lines)} lines for {len(cues)} cues")
-    return lines
+    # Each retry pads the prompt, so it has its own cache key and never reads the
+    # previous attempt's miscount back. It must still be cached: uncached, a batch
+    # that only passes on retry is re-asked on every rerun, and on the free tier
+    # (whole talk as context) that alone ate the token quota and stalled a 1h30 take.
+    out = llm.generate(prompt + ("\n" * _retry), schema=_TRANSLATE_SCHEMA, temperature=0.0)
+    items = (out or {}).get("lines", [])
+    if len(items) != len(cues):
+        raise ValueError(f"translation returned {len(items)} lines for {len(cues)} cues")
+    # The right count is not the right order: on a 27 min talk one batch came
+    # back 30 for 30, every line one cue late. The echoed source pins each line.
+    for n, (it, c) in enumerate(zip(items, cues)):
+        if isinstance(it, dict) and not _same_fragment(str(it.get("src", "")), c.text):
+            raise ValueError(f"translation line {n + 1} echoes {it.get('src')!r}, "
+                             f"not {c.text!r}")
+    lines = [str(it.get("en", "")) if isinstance(it, dict) else str(it) for it in items]
+    # One batch of a long talk came back "1. ...", "2. ..." on every line.
+    num = re.compile(r"^\s*\d+[.)]\s+")
+    return [num.sub("", en) if not num.match(c.text) else en for en, c in zip(lines, cues)]
 
 
 def write_captions(words: WordsDoc | Mapping[str, WordsDoc], edl: EDL,
@@ -737,8 +907,10 @@ def write_captions(words: WordsDoc | Mapping[str, WordsDoc], edl: EDL,
     ass_path.write_text(render_ass(cues, st, english), encoding="utf-8")
     if english:
         (edit_paths.captions / "final.en.srt").write_text("\n".join(
-            f"{i}\n{_srt_time(c.start)} --> {_srt_time(c.end)}\n{t}\n"
-            for i, (c, t) in enumerate(zip(cues, english), start=1)), encoding="utf-8")
+            f"{i}\n{_srt_time(s)} --> {_srt_time(e)}\n{t}\n"
+            for i, (s, e, t) in enumerate(readable_english(
+                cues, english, _english_cfg().get("readability")), start=1)),
+            encoding="utf-8")
 
     caps = configs.load("captions") if srt is None else {}
     want_srt = caps.get("export_srt", True) if srt is None else srt

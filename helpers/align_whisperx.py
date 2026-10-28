@@ -28,6 +28,7 @@ Run standalone:
 from __future__ import annotations
 
 import argparse
+import functools
 import re
 import sys
 from pathlib import Path
@@ -431,7 +432,15 @@ def _whisperx():
 
 def load_audio(wav: str | Path):
     """16 kHz float32 mono array, via whisperx (ffmpeg under the hood)."""
-    return _whisperx().load_audio(str(wav))
+    return _load_audio_cached(str(Path(wav).resolve()))
+
+
+# QA re-aligns every flagged window with audio=None. Decoding the whole take per
+# window was free on a 6 min Reel and ran 20+ min into swap on a 27 min YouTube
+# take (8 GB Mac). Callers only slice the array, so one shared copy is safe.
+@functools.lru_cache(maxsize=1)
+def _load_audio_cached(wav: str):
+    return _whisperx().load_audio(wav)
 
 
 class _ModelCache:
@@ -452,6 +461,17 @@ class _ModelCache:
 
 
 _MODELS = _ModelCache()
+
+
+def _window_device(device: str) -> str:
+    """Device for the one-window re-aligns (QA repairs, Latin runs).
+
+    MPS compiles and keeps a graph per input shape, and every window has its own
+    length: on a 27 min take the repair loop grew the process to 14 GB (5 GB GPU
+    + 8 GB small allocations) on an 8 GB Mac. A window is a few seconds of audio,
+    so CPU costs little there; the whole-take pass keeps the GPU.
+    """
+    return "cpu" if device == "mps" else device
 
 
 def _run_align(segments: list[dict], audio, *, language: str, device: str,
@@ -526,6 +546,7 @@ def align_latin_spans(doc: WordsDoc, audio: Any, cfg: dict | None = None, *,
     interpolate = acfg.get("interpolate_method", "ignore")
     device = device or resolve_device(cfg)
     duration = duration if duration is not None else len(audio) / float(SAMPLE_RATE)
+    device = _window_device(device)
 
     fixed = 0
     for i, j in latin_runs(doc.words):
@@ -561,7 +582,7 @@ def realign_window(doc: WordsDoc, wav: str | Path, i: int, j: int,
     """
     cfg = cfg or {}
     acfg = cfgmod.get(cfg, "alignment") or {}
-    device = device or resolve_device(cfg)
+    device = _window_device(device or resolve_device(cfg))
     if audio is None:
         audio = load_audio(wav)
     duration = len(audio) / float(SAMPLE_RATE)

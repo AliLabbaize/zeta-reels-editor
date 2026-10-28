@@ -15,12 +15,29 @@ english:
   enabled: true
   mode: only                 # only = English replaces the Darija burn | under = both
   size_ratio: 0.45           # "under": of the Darija font size
-  only_size_ratio: 0.52      # "only": English alone reads bigger (77 px)
-  only_margin_v: 320         # "only": baseline 1600 of 1920, just above where the
-                             # Reels app draws the username and description
-  only_max_chars: 30         # wrap longer English lines: at 77 px a 31st char
+  only_size_ratio: 0.47      # "only": English alone, 69 px (was 76, he wanted it
+                             # a little smaller)
+  only_margin_v: 265         # "only": baseline 1655 of 1920. Lower than the old
+                             # 1600 by one line; the smaller face buys the room
+                             # back before the Reels username/description band.
+  only_max_chars: 33         # wrap longer English lines: at 69 px a 34th char
                              # reaches the right action rail (like/comment/share)
   font: "Noto Sans"
+  # "only": translated fragments are regrouped into readable cues
+  # (captions.readable_english). Netflix English: <= 20 chars/s, 2 lines max;
+  # short-form guidance: 15-17 cps on a phone. Ali (2026-10-25): "sometimes it's
+  # too fast and you cut words in two".
+  readability:
+    max_cps: 17              # reading speed ceiling
+    min_duration_s: 1.0      # nothing flashes by
+    max_duration_s: 6.0
+    max_chars: 58            # fits two lines of only_max_chars (33) with room for a clean break
+    merge_gap_s: 0.8         # never merge across a longer pause
+  aspects:                  # per-aspect overrides of the "only" numbers above
+    "16:9":                  # YouTube, 1920x1080 grid (libass scales it to 4K)
+      only_size_ratio: 0.80  # 54 px of 1080, 5% of frame height: phone-readable
+      only_margin_v: 70      # baseline 1010 of 1080; no app chrome on a 16:9 player
+      only_max_chars: 42     # wrap past 42: two short lines beat one wide one
 
 aspects:
   "9:16":                      # Reels / TikTok / Shorts
